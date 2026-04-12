@@ -188,6 +188,10 @@ type OrderBook struct {
 
 	// Stop orders
 	stopBook *StopBook
+
+	// Auction market orders (stored separately since they have no meaningful price)
+	auctionMarketBuys  []*models.Order
+	auctionMarketSells []*models.Order
 }
 
 func NewOrderBook(instrument string) *OrderBook {
@@ -460,6 +464,178 @@ func matchesFilter(order *models.Order, filter models.MassCancelFilter) bool {
 		return false
 	}
 	return true
+}
+
+// QueueOrder inserts an order into the book without matching.
+// Used during auction/pre-open phases when orders accumulate but are not matched.
+func (ob *OrderBook) QueueOrder(order *models.Order) error {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+
+	switch order.Type {
+	case models.OrderTypeLimit:
+		ob.addToBook(order)
+		order.Status = models.StatusNew
+	case models.OrderTypeMarket:
+		// Market orders during auctions are stored separately
+		order.Status = models.StatusNew
+		if order.Side == models.SideBuy {
+			ob.auctionMarketBuys = append(ob.auctionMarketBuys, order)
+		} else {
+			ob.auctionMarketSells = append(ob.auctionMarketSells, order)
+		}
+	case models.OrderTypeStop, models.OrderTypeStopLimit:
+		order.Status = models.StatusPendingTrigger
+		ob.stopBook.Add(order)
+	default:
+		return fmt.Errorf("order type %s not valid during auction phase", order.Type)
+	}
+	ob.nextSeq()
+	return nil
+}
+
+// LastPrice returns the last traded price.
+func (ob *OrderBook) LastPrice() int64 {
+	ob.mu.RLock()
+	defer ob.mu.RUnlock()
+	return ob.lastPrice
+}
+
+// Uncross executes the auction uncross at the given equilibrium price.
+// All crossing orders are filled at the single equilibrium price.
+// Market orders are filled first, then limit orders by price-time priority.
+// Returns the list of trades.
+func (ob *OrderBook) Uncross(eqPrice int64) []*MatchResult {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+
+	if eqPrice <= 0 {
+		return nil
+	}
+
+	var results []*MatchResult
+
+	// Collect all eligible buys (market buys + limit buys with price >= eqPrice)
+	var buys []*models.Order
+	buys = append(buys, ob.auctionMarketBuys...)
+	ob.bids.ForEachDescending(func(level *PriceLevel) bool {
+		if level.Price < eqPrice {
+			return false
+		}
+		for e := level.Orders.Front(); e != nil; e = e.Next() {
+			buys = append(buys, e.Value.(*models.Order))
+		}
+		return true
+	})
+
+	// Collect all eligible sells (market sells + limit sells with price <= eqPrice)
+	var sells []*models.Order
+	sells = append(sells, ob.auctionMarketSells...)
+	ob.asks.ForEachAscending(func(level *PriceLevel) bool {
+		if level.Price > eqPrice {
+			return false
+		}
+		for e := level.Orders.Front(); e != nil; e = e.Next() {
+			sells = append(sells, e.Value.(*models.Order))
+		}
+		return true
+	})
+
+	// Match buys against sells at the equilibrium price
+	bi, si := 0, 0
+	for bi < len(buys) && si < len(sells) {
+		buy := buys[bi]
+		sell := sells[si]
+
+		if buy.RemainingQty() == 0 {
+			bi++
+			continue
+		}
+		if sell.RemainingQty() == 0 {
+			si++
+			continue
+		}
+
+		fillQty := buy.RemainingQty()
+		if sell.RemainingQty() < fillQty {
+			fillQty = sell.RemainingQty()
+		}
+
+		buy.FilledQty += fillQty
+		sell.FilledQty += fillQty
+
+		ob.updateAvgPrice(buy, eqPrice, fillQty)
+		ob.updateAvgPrice(sell, eqPrice, fillQty)
+
+		trade := models.NewTrade(ob.instrument, buy, sell, eqPrice, fillQty, models.SideBuy)
+		results = append(results, &MatchResult{Trade: trade, BuyOrder: buy, SellOrder: sell})
+
+		if buy.IsFilled() {
+			buy.Status = models.StatusFilled
+			bi++
+		}
+		if sell.IsFilled() {
+			sell.Status = models.StatusFilled
+			si++
+		}
+	}
+
+	// Clean up: remove filled orders from the book, update partially filled
+	for _, buy := range buys {
+		if buy.IsFilled() {
+			// Remove from main book if it's a limit order
+			if buy.Type == models.OrderTypeLimit {
+				if level := ob.bids.Get(buy.Price); level != nil {
+					level.Remove(buy)
+					if level.IsEmpty() {
+						ob.bids.Remove(buy.Price)
+					}
+				}
+				delete(ob.orders, buy.ID)
+			}
+		} else if buy.FilledQty > 0 {
+			buy.Status = models.StatusPartiallyFilled
+		}
+	}
+	for _, sell := range sells {
+		if sell.IsFilled() {
+			if sell.Type == models.OrderTypeLimit {
+				if level := ob.asks.Get(sell.Price); level != nil {
+					level.Remove(sell)
+					if level.IsEmpty() {
+						ob.asks.Remove(sell.Price)
+					}
+				}
+				delete(ob.orders, sell.ID)
+			}
+		} else if sell.FilledQty > 0 {
+			sell.Status = models.StatusPartiallyFilled
+		}
+	}
+
+	// Cancel unfilled market orders (they don't rest in continuous mode)
+	for _, o := range ob.auctionMarketBuys {
+		if !o.IsFilled() && o.FilledQty == 0 {
+			o.Status = models.StatusCancelled
+		}
+	}
+	for _, o := range ob.auctionMarketSells {
+		if !o.IsFilled() && o.FilledQty == 0 {
+			o.Status = models.StatusCancelled
+		}
+	}
+
+	// Clear auction market order lists
+	ob.auctionMarketBuys = nil
+	ob.auctionMarketSells = nil
+
+	if len(results) > 0 {
+		ob.lastPrice = eqPrice
+		ob.lastTrade = results[len(results)-1].Trade
+		ob.nextSeq()
+	}
+
+	return results
 }
 
 // GetOrder retrieves an order by ID.

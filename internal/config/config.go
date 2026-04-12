@@ -40,6 +40,10 @@ type Config struct {
 	AutoResumeAfterSec    int     `json:"auto_resume_after_sec"`
 	PreOpenDurationSec    int     `json:"pre_open_duration_sec"`
 
+	// Session
+	SessionEnabled       bool   `json:"session_enabled"`
+	SessionInitialPhase  string `json:"session_initial_phase"` // "CONTINUOUS" (default) or "PRE_OPEN"
+
 	// WebSocket
 	WSEnabled    bool `json:"ws_enabled"`
 	WSMaxClients int  `json:"ws_max_clients"`

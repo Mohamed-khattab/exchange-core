@@ -13,6 +13,7 @@ import (
 	"github.com/trading/matching-engine/internal/metrics"
 	"github.com/trading/matching-engine/internal/models"
 	"github.com/trading/matching-engine/internal/orderbook"
+	"github.com/trading/matching-engine/internal/session"
 	"github.com/trading/matching-engine/internal/wal"
 	"github.com/trading/matching-engine/internal/ws"
 )
@@ -77,11 +78,12 @@ type instrumentWorker struct {
 	walBuf        [512]byte              // pre-allocated encode buffer (only used by worker goroutine)
 	eventCount    int                    // events since last snapshot
 	snapshotEvery int                    // 0 = no snapshots
-	breaker       *circuit.InstrumentBreaker // nil if circuit breaker disabled
-	eventCh       chan<- *ws.Event           // nil if WebSocket disabled
+	breaker       *circuit.InstrumentBreaker    // nil if circuit breaker disabled
+	session       *session.InstrumentSession   // nil if sessions disabled
+	eventCh       chan<- *ws.Event              // nil if WebSocket disabled
 }
 
-func newInstrumentWorker(instrument string, mc *metrics.Collector, walCfg WALConfig, stpCfg STPConfig, cbCfg circuit.Config) (*instrumentWorker, error) {
+func newInstrumentWorker(instrument string, mc *metrics.Collector, walCfg WALConfig, stpCfg STPConfig, cbCfg circuit.Config, sesCfg SessionConfig) (*instrumentWorker, error) {
 	book := orderbook.NewOrderBook(instrument)
 	if stpCfg.Enabled {
 		book.SetSTP(true, stpCfg.DefaultMode)
@@ -107,6 +109,10 @@ func newInstrumentWorker(instrument string, mc *metrics.Collector, walCfg WALCon
 
 	if cbCfg.Enabled {
 		w.breaker = circuit.NewInstrumentBreaker(instrument, cbCfg)
+	}
+
+	if sesCfg.Enabled {
+		w.session = session.NewInstrumentSession(instrument, sesCfg.InitialPhase)
 	}
 
 	return w, nil
@@ -241,6 +247,37 @@ func (w *instrumentWorker) run() {
 func (w *instrumentWorker) handleCommand(cmd *command) {
 	switch cmd.typ {
 	case cmdAddOrder:
+		// Session phase check
+		if w.session != nil {
+			phase := w.session.Phase()
+			if phase == session.PhaseClosed {
+				if cmd.respCh != nil {
+					cmd.respCh <- &commandResult{err: fmt.Errorf("market closed for %s", w.instrument)}
+				}
+				return
+			}
+			if !session.MatchingEnabled(phase) {
+				// Auction/pre-open phase: queue without matching
+				if w.walWriter != nil {
+					seq := w.walWriter.NextSeqNo()
+					n := wal.EncodeOrderAdd(w.walBuf[:], seq, cmd.order)
+					if err := w.walWriter.Append(w.walBuf[:n]); err != nil {
+						if cmd.respCh != nil {
+							cmd.respCh <- &commandResult{err: fmt.Errorf("WAL write failed: %w", err)}
+						}
+						return
+					}
+					w.eventCount++
+				}
+				err := w.book.QueueOrder(cmd.order)
+				if cmd.respCh != nil {
+					cmd.respCh <- &commandResult{order: cmd.order, err: err}
+				}
+				w.maybeSnapshot()
+				return
+			}
+		}
+
 		// Circuit breaker pre-check (before WAL write)
 		if w.breaker != nil {
 			if err := w.breaker.CheckOrder(cmd.order); err != nil {
@@ -373,6 +410,14 @@ func (w *instrumentWorker) handleCommand(cmd *command) {
 		w.maybeSnapshot()
 
 	case cmdCancelOrder:
+		// Session: reject cancellations during CLOSED
+		if w.session != nil && w.session.Phase() == session.PhaseClosed {
+			if cmd.respCh != nil {
+				cmd.respCh <- &commandResult{err: fmt.Errorf("market closed for %s", w.instrument)}
+			}
+			return
+		}
+
 		// WAL: write BEFORE mutation
 		if w.walWriter != nil {
 			seq := w.walWriter.NextSeqNo()
@@ -519,11 +564,18 @@ func (w *instrumentWorker) stop() {
 
 // ── MatchingEngine ────────────────────────────────────────────────────────────
 
+// SessionConfig holds trading session settings.
+type SessionConfig struct {
+	Enabled      bool
+	InitialPhase session.SessionPhase
+}
+
 // EngineConfig holds all engine-level configuration.
 type EngineConfig struct {
 	WAL            WALConfig
 	STP            STPConfig
 	CircuitBreaker circuit.Config
+	Session        SessionConfig
 }
 
 // MatchingEngine manages all instrument workers and provides a unified API
@@ -552,7 +604,7 @@ func NewMatchingEngine(instruments []string, mc *metrics.Collector, cfgs ...Engi
 		cfg:      cfg,
 	}
 	for _, inst := range instruments {
-		w, err := newInstrumentWorker(inst, mc, cfg.WAL, cfg.STP, cfg.CircuitBreaker)
+		w, err := newInstrumentWorker(inst, mc, cfg.WAL, cfg.STP, cfg.CircuitBreaker, cfg.Session)
 		if err != nil {
 			log.Fatalf("[engine] failed to create worker for %s: %v", inst, err)
 		}
@@ -757,6 +809,30 @@ func (me *MatchingEngine) ListInstruments() []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// GetSessionPhase returns the current session phase for an instrument.
+func (me *MatchingEngine) GetSessionPhase(instrument string) (session.SessionPhase, error) {
+	worker, err := me.workerFor(instrument)
+	if err != nil {
+		return 0, err
+	}
+	if worker.session == nil {
+		return session.PhaseContinuous, nil // sessions disabled = always continuous
+	}
+	return worker.session.Phase(), nil
+}
+
+// TransitionSession transitions the session for an instrument to the given phase.
+func (me *MatchingEngine) TransitionSession(instrument string, to session.SessionPhase) error {
+	worker, err := me.workerFor(instrument)
+	if err != nil {
+		return err
+	}
+	if worker.session == nil {
+		return fmt.Errorf("sessions not enabled")
+	}
+	return worker.session.Transition(to)
 }
 
 // workerFor resolves a worker from an instrument symbol.
