@@ -39,20 +39,27 @@ const (
 	cmdAddOrder    cmdType = iota
 	cmdCancelOrder cmdType = iota
 	cmdStop        cmdType = iota
+	cmdAmendOrder  cmdType = iota
+	cmdMassCancel  cmdType = iota
 )
 
 type command struct {
-	typ      cmdType
-	order    *models.Order
-	cancelID uint64
-	respCh   chan *commandResult
+	typ              cmdType
+	order            *models.Order
+	cancelID         uint64
+	respCh           chan *commandResult
+	amendID          uint64
+	amendPrice       int64
+	amendQty         uint64
+	massCancelFilter *models.MassCancelFilter
 }
 
 type commandResult struct {
-	order  *models.Order
-	trades []*orderbook.MatchResult
-	err    error
-	ok     bool
+	order     *models.Order
+	trades    []*orderbook.MatchResult
+	err       error
+	ok        bool
+	cancelled []*models.Order
 }
 
 // ── InstrumentWorker ──────────────────────────────────────────────────────────
@@ -163,6 +170,30 @@ func (w *instrumentWorker) recover(walDir string) error {
 				return fmt.Errorf("decoding order cancel: %w", err)
 			}
 			w.book.CancelOrder(orderID)
+			replayCount++
+
+		case wal.EventOrderAmend:
+			orderID, _, newPrice, newQty, err := wal.DecodeOrderAmend(payload)
+			if err != nil {
+				return fmt.Errorf("decoding order amend: %w", err)
+			}
+			w.book.AmendOrder(orderID, newPrice, newQty)
+			replayCount++
+
+		case wal.EventMassCancel:
+			_, clientID, sidePtr, err := wal.DecodeMassCancel(payload)
+			if err != nil {
+				return fmt.Errorf("decoding mass cancel: %w", err)
+			}
+			filter := models.MassCancelFilter{
+				Instrument: w.instrument,
+				ClientID:   clientID,
+			}
+			if sidePtr != nil {
+				s := models.Side(*sidePtr)
+				filter.Side = &s
+			}
+			w.book.MassCancel(filter)
 			replayCount++
 		}
 		return nil
@@ -363,6 +394,92 @@ func (w *instrumentWorker) handleCommand(cmd *command) {
 		}
 
 		w.maybeSnapshot()
+
+	case cmdAmendOrder:
+		// Circuit breaker: reject amendments when halted
+		if w.breaker != nil {
+			if w.breaker.State() != circuit.StateContinuous {
+				if cmd.respCh != nil {
+					cmd.respCh <- &commandResult{err: fmt.Errorf("trading halted for %s", w.instrument)}
+				}
+				return
+			}
+		}
+
+		// WAL: write BEFORE mutation
+		if w.walWriter != nil {
+			seq := w.walWriter.NextSeqNo()
+			n := wal.EncodeOrderAmend(w.walBuf[:], seq, cmd.amendID, w.instrument, cmd.amendPrice, cmd.amendQty)
+			if err := w.walWriter.Append(w.walBuf[:n]); err != nil {
+				if cmd.respCh != nil {
+					cmd.respCh <- &commandResult{err: fmt.Errorf("WAL write failed: %w", err)}
+				}
+				return
+			}
+			w.eventCount++
+		}
+
+		order, trades, err := w.book.AmendOrder(cmd.amendID, cmd.amendPrice, cmd.amendQty)
+		if err != nil {
+			if cmd.respCh != nil {
+				cmd.respCh <- &commandResult{err: err}
+			}
+			return
+		}
+
+		for _, r := range trades {
+			w.mc.RecordTrade(w.instrument, r.Trade)
+			if w.breaker != nil {
+				w.breaker.RecordTrade(r.Trade.Price, r.Trade.Timestamp)
+			}
+			if w.eventCh != nil {
+				select {
+				case w.eventCh <- &ws.Event{
+					Type: "trade", Instrument: w.instrument,
+					Data: map[string]interface{}{
+						"id": r.Trade.ID, "price": models.PriceToFloat(r.Trade.Price),
+						"quantity": models.QtyToFloat(r.Trade.Quantity),
+					},
+				}:
+				default:
+				}
+			}
+		}
+
+		if cmd.respCh != nil {
+			cmd.respCh <- &commandResult{order: order, trades: trades}
+		}
+		w.maybeSnapshot()
+
+	case cmdMassCancel:
+		// Mass cancel is always allowed (even during halt)
+		if w.walWriter != nil {
+			seq := w.walWriter.NextSeqNo()
+			var sidePtr *int8
+			if cmd.massCancelFilter.Side != nil {
+				s := int8(*cmd.massCancelFilter.Side)
+				sidePtr = &s
+			}
+			n := wal.EncodeMassCancel(w.walBuf[:], seq,
+				cmd.massCancelFilter.Instrument, cmd.massCancelFilter.ClientID, sidePtr)
+			if err := w.walWriter.Append(w.walBuf[:n]); err != nil {
+				if cmd.respCh != nil {
+					cmd.respCh <- &commandResult{err: fmt.Errorf("WAL write failed: %w", err)}
+				}
+				return
+			}
+			w.eventCount++
+		}
+
+		cancelled := w.book.MassCancel(*cmd.massCancelFilter)
+		for range cancelled {
+			w.mc.RecordCancellation(w.instrument)
+		}
+
+		if cmd.respCh != nil {
+			cmd.respCh <- &commandResult{cancelled: cancelled, ok: true}
+		}
+		w.maybeSnapshot()
 	}
 }
 
@@ -543,6 +660,50 @@ func (me *MatchingEngine) CancelOrder(instrument string, orderID uint64) (*model
 		return nil, fmt.Errorf("order %d not found in %s", orderID, instrument)
 	}
 	return result.order, nil
+}
+
+// AmendOrder modifies a resting order's price and/or quantity.
+func (me *MatchingEngine) AmendOrder(instrument string, orderID uint64, newPrice int64, newQty uint64) (*models.Order, []*orderbook.MatchResult, error) {
+	worker, err := me.workerFor(instrument)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	respCh := make(chan *commandResult, 1)
+	worker.submit(&command{
+		typ:        cmdAmendOrder,
+		amendID:    orderID,
+		amendPrice: newPrice,
+		amendQty:   newQty,
+		respCh:     respCh,
+	})
+
+	result := <-respCh
+	if result.err != nil {
+		return nil, nil, result.err
+	}
+	return result.order, result.trades, nil
+}
+
+// MassCancel cancels all orders matching the filter.
+func (me *MatchingEngine) MassCancel(filter models.MassCancelFilter) ([]*models.Order, error) {
+	worker, err := me.workerFor(filter.Instrument)
+	if err != nil {
+		return nil, err
+	}
+
+	respCh := make(chan *commandResult, 1)
+	worker.submit(&command{
+		typ:              cmdMassCancel,
+		massCancelFilter: &filter,
+		respCh:           respCh,
+	})
+
+	result := <-respCh
+	if result.err != nil {
+		return nil, result.err
+	}
+	return result.cancelled, nil
 }
 
 // GetOrderBook returns a depth snapshot for an instrument.

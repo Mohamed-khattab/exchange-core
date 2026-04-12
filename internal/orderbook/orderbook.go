@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/trading/matching-engine/internal/models"
 )
@@ -72,102 +73,93 @@ func (pl *PriceLevel) IsEmpty() bool {
 }
 
 // ── priceTree ─────────────────────────────────────────────────────────────────
-// A sorted set of price levels stored in a sorted slice. For production use,
-// replace with a balanced BST (e.g., a red-black tree from a vendored library).
-// The slice approach is simple and performs well up to ~5000 distinct price levels,
-// which covers the vast majority of real-world order books.
+// A balanced red-black tree of price levels providing O(log n) insert/remove.
+// Wraps rbTree and provides the same interface as the previous sorted-slice
+// implementation.
 
 type priceTree struct {
-	levels []*PriceLevel // sorted ascending
-	index  map[int64]int // price -> position in slice
-	isBuy  bool          // buy side iterates in descending order
+	tree  *rbTree
+	isBuy bool // buy side: best = max; sell side: best = min
 }
 
 func newPriceTree(isBuy bool) *priceTree {
 	return &priceTree{
-		levels: make([]*PriceLevel, 0, 64),
-		index:  make(map[int64]int),
-		isBuy:  isBuy,
+		tree:  newRBTree(),
+		isBuy: isBuy,
 	}
-}
-
-func (t *priceTree) findInsertPos(price int64) int {
-	lo, hi := 0, len(t.levels)
-	for lo < hi {
-		mid := (lo + hi) / 2
-		if t.levels[mid].Price < price {
-			lo = mid + 1
-		} else {
-			hi = mid
-		}
-	}
-	return lo
 }
 
 func (t *priceTree) GetOrCreate(price int64) *PriceLevel {
-	if pos, ok := t.index[price]; ok {
-		return t.levels[pos]
+	if n := t.tree.Find(price); n != nil {
+		return n.level
 	}
 	pl := newPriceLevel(price)
-	pos := t.findInsertPos(price)
-	// Insert at pos
-	t.levels = append(t.levels, nil)
-	copy(t.levels[pos+1:], t.levels[pos:])
-	t.levels[pos] = pl
-	// Rebuild index for shifted entries
-	for i := pos; i < len(t.levels); i++ {
-		t.index[t.levels[i].Price] = i
-	}
+	t.tree.Insert(price, pl)
 	return pl
 }
 
 func (t *priceTree) Get(price int64) *PriceLevel {
-	if pos, ok := t.index[price]; ok {
-		return t.levels[pos]
+	if n := t.tree.Find(price); n != nil {
+		return n.level
 	}
 	return nil
 }
 
 func (t *priceTree) Remove(price int64) {
-	pos, ok := t.index[price]
-	if !ok {
-		return
-	}
-	t.levels = append(t.levels[:pos], t.levels[pos+1:]...)
-	delete(t.index, price)
-	// Rebuild index for shifted entries
-	for i := pos; i < len(t.levels); i++ {
-		t.index[t.levels[i].Price] = i
-	}
+	t.tree.Delete(price)
 }
 
-// Best returns the best price level (highest bid / lowest ask)
+// Best returns the best price level (highest bid / lowest ask).
 func (t *priceTree) Best() *PriceLevel {
-	if len(t.levels) == 0 {
+	var n *rbNode
+	if t.isBuy {
+		n = t.tree.Max()
+	} else {
+		n = t.tree.Min()
+	}
+	if n == nil {
 		return nil
 	}
-	if t.isBuy {
-		return t.levels[len(t.levels)-1] // highest bid
-	}
-	return t.levels[0] // lowest ask
+	return n.level
 }
 
-func (t *priceTree) Len() int { return len(t.levels) }
+func (t *priceTree) Len() int { return t.tree.Len() }
 
-// TopN returns top N levels from best to worst price
+// TopN returns top N levels from best to worst price.
 func (t *priceTree) TopN(n int) []*PriceLevel {
-	if n > len(t.levels) {
-		n = len(t.levels)
+	total := t.tree.Len()
+	if n > total {
+		n = total
 	}
-	result := make([]*PriceLevel, n)
+	result := make([]*PriceLevel, 0, n)
 	if t.isBuy {
-		for i := 0; i < n; i++ {
-			result[i] = t.levels[len(t.levels)-1-i]
+		// Descending from max
+		node := t.tree.Max()
+		for i := 0; i < n && node != nil; i++ {
+			result = append(result, node.level)
+			node = t.tree.Predecessor(node)
 		}
 	} else {
-		copy(result, t.levels[:n])
+		// Ascending from min
+		node := t.tree.Min()
+		for i := 0; i < n && node != nil; i++ {
+			result = append(result, node.level)
+			node = t.tree.Successor(node)
+		}
 	}
 	return result
+}
+
+// ForEachAscending iterates levels in ascending price order.
+// Stops if fn returns false.
+func (t *priceTree) ForEachAscending(fn func(*PriceLevel) bool) {
+	t.tree.ForEachAscending(fn)
+}
+
+// ForEachDescending iterates levels in descending price order.
+// Stops if fn returns false.
+func (t *priceTree) ForEachDescending(fn func(*PriceLevel) bool) {
+	t.tree.ForEachDescending(fn)
 }
 
 // ── OrderBook ─────────────────────────────────────────────────────────────────
@@ -332,6 +324,142 @@ func (ob *OrderBook) CheckStops() []*models.Order {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
 	return ob.stopBook.TriggeredOrders(ob.lastPrice)
+}
+
+// AmendOrder modifies the price and/or quantity of a resting LIMIT order.
+// newPrice=0 means keep current price. newQty=0 means keep current quantity.
+// Returns the amended order, any trades (if cancel+re-insert caused matching), and an error.
+func (ob *OrderBook) AmendOrder(orderID uint64, newPrice int64, newQty uint64) (*models.Order, []*MatchResult, error) {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+
+	order, ok := ob.orders[orderID]
+	if !ok {
+		return nil, nil, fmt.Errorf("order %d not found", orderID)
+	}
+
+	// Only resting LIMIT orders can be amended
+	if order.Type != models.OrderTypeLimit {
+		return nil, nil, fmt.Errorf("can only amend LIMIT orders (got %s)", order.Type)
+	}
+	if order.Status != models.StatusNew && order.Status != models.StatusPartiallyFilled {
+		return nil, nil, fmt.Errorf("cannot amend order with status %s", order.Status)
+	}
+
+	// Resolve defaults
+	if newPrice == 0 {
+		newPrice = order.Price
+	}
+	if newQty == 0 {
+		newQty = order.Quantity
+	}
+
+	// Cannot reduce below filled quantity
+	if newQty <= order.FilledQty {
+		return nil, nil, fmt.Errorf("new quantity must be greater than filled quantity (%d)",
+			order.FilledQty)
+	}
+
+	// No-op check
+	if newPrice == order.Price && newQty == order.Quantity {
+		return order, nil, nil
+	}
+
+	priceUnchanged := newPrice == order.Price
+	qtyDecreaseOnly := newQty < order.Quantity
+
+	if priceUnchanged && qtyDecreaseOnly {
+		// In-place amendment: preserve time priority
+		delta := int64(order.Quantity) - int64(newQty)
+		order.Quantity = newQty
+		// Update price level total
+		if order.Side == models.SideBuy {
+			if level := ob.bids.Get(order.Price); level != nil {
+				level.UpdateQty(orderID, -delta)
+			}
+		} else {
+			if level := ob.asks.Get(order.Price); level != nil {
+				level.UpdateQty(orderID, -delta)
+			}
+		}
+		order.UpdatedAt = time.Now().UTC()
+		ob.nextSeq()
+		return order, nil, nil
+	}
+
+	// Cancel + re-insert: lose time priority
+	ob.removeFromBook(order)
+	delete(ob.orders, orderID)
+
+	order.Price = newPrice
+	order.Quantity = newQty
+	order.UpdatedAt = time.Now().UTC()
+	if order.FilledQty > 0 {
+		order.Status = models.StatusPartiallyFilled
+	} else {
+		order.Status = models.StatusNew
+	}
+
+	// Re-enter matching (may produce trades)
+	results, _ := ob.matchLimit(order)
+	return order, results, nil
+}
+
+// MassCancel cancels all orders matching the given filter.
+// Returns the list of cancelled orders.
+func (ob *OrderBook) MassCancel(filter models.MassCancelFilter) []*models.Order {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+
+	var cancelled []*models.Order
+
+	// Collect matching order IDs from main book (iterate then delete)
+	var toCancel []uint64
+	for id, order := range ob.orders {
+		if !matchesFilter(order, filter) {
+			continue
+		}
+		toCancel = append(toCancel, id)
+	}
+	for _, id := range toCancel {
+		order := ob.orders[id]
+		ob.removeFromBook(order)
+		order.Status = models.StatusCancelled
+		delete(ob.orders, id)
+		cancelled = append(cancelled, order)
+	}
+
+	// Also cancel matching stop orders
+	var stopToCancel []uint64
+	for id, order := range ob.stopBook.orders {
+		if !matchesFilter(order, filter) {
+			continue
+		}
+		stopToCancel = append(stopToCancel, id)
+	}
+	for _, id := range stopToCancel {
+		order, ok := ob.stopBook.Remove(id)
+		if ok {
+			order.Status = models.StatusCancelled
+			cancelled = append(cancelled, order)
+		}
+	}
+
+	if len(cancelled) > 0 {
+		ob.nextSeq()
+	}
+
+	return cancelled
+}
+
+func matchesFilter(order *models.Order, filter models.MassCancelFilter) bool {
+	if filter.ClientID != "" && order.ClientID != filter.ClientID {
+		return false
+	}
+	if filter.Side != nil && order.Side != *filter.Side {
+		return false
+	}
+	return true
 }
 
 // GetOrder retrieves an order by ID.
@@ -522,21 +650,21 @@ func (ob *OrderBook) matchFOK(order *models.Order) ([]*MatchResult, error) {
 func (ob *OrderBook) availableLiquidity(order *models.Order) uint64 {
 	var total uint64
 	if order.Side == models.SideBuy {
-		for _, level := range ob.asks.levels {
+		ob.asks.ForEachAscending(func(level *PriceLevel) bool {
 			if level.Price > order.Price {
-				break
+				return false
 			}
 			total += level.TotalQty
-		}
+			return true
+		})
 	} else {
-		n := len(ob.bids.levels)
-		for i := n - 1; i >= 0; i-- {
-			level := ob.bids.levels[i]
+		ob.bids.ForEachDescending(func(level *PriceLevel) bool {
 			if level.Price < order.Price {
-				break
+				return false
 			}
 			total += level.TotalQty
-		}
+			return true
+		})
 	}
 	return total
 }

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/trading/matching-engine/internal/engine"
 	"github.com/trading/matching-engine/internal/metrics"
 	"github.com/trading/matching-engine/internal/models"
@@ -72,7 +73,13 @@ func NewRouter(me *engine.MatchingEngine, mc *metrics.Collector, authMW, rateLim
 	if authMW != nil {
 		chain = authMW(chain)
 	}
-	return withLogging(withCORS(chain))
+
+	// Top-level mux: /metrics is outside auth/ratelimit, everything else goes through the chain
+	top := http.NewServeMux()
+	top.Handle("/metrics", promhttp.HandlerFor(mc.Registry, promhttp.HandlerOpts{}))
+	top.Handle("/", chain)
+
+	return withLogging(withCORS(top))
 }
 
 type handler struct {
@@ -86,10 +93,50 @@ func (h *handler) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *handler) ordersHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		badRequest(w, "only POST is supported")
+	switch r.Method {
+	case http.MethodPost:
+		h.submitOrderHandler(w, r)
+	case http.MethodDelete:
+		h.massCancelHandler(w, r)
+	default:
+		badRequest(w, "only POST and DELETE are supported")
+	}
+}
+
+func (h *handler) massCancelHandler(w http.ResponseWriter, r *http.Request) {
+	instrument := r.URL.Query().Get("instrument")
+	if instrument == "" {
+		badRequest(w, "instrument query param required")
 		return
 	}
+	filter := models.MassCancelFilter{Instrument: instrument}
+	if clientID := r.URL.Query().Get("client_id"); clientID != "" {
+		filter.ClientID = clientID
+	}
+	if sideStr := r.URL.Query().Get("side"); sideStr != "" {
+		side, err := models.ParseSide(sideStr)
+		if err != nil {
+			badRequest(w, err.Error())
+			return
+		}
+		filter.Side = &side
+	}
+	cancelled, err := h.me.MassCancel(filter)
+	if err != nil {
+		serverError(w, err.Error())
+		return
+	}
+	ids := make([]uint64, len(cancelled))
+	for i, o := range cancelled {
+		ids[i] = o.ID
+	}
+	okResp(w, map[string]interface{}{
+		"cancelled_count": len(cancelled),
+		"cancelled_ids":   ids,
+	})
+}
+
+func (h *handler) submitOrderHandler(w http.ResponseWriter, r *http.Request) {
 	var req models.OrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		badRequest(w, "invalid JSON: "+err.Error())
@@ -137,8 +184,25 @@ func (h *handler) orderByIDHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		okResp(w, orderToResponse(order))
+	case http.MethodPut:
+		var req models.AmendRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			badRequest(w, "invalid JSON: "+err.Error())
+			return
+		}
+		newPrice := models.FloatToPrice(req.Price)
+		newQty := models.FloatToQty(req.Quantity)
+		order, trades, err := h.me.AmendOrder(instrument, orderID, newPrice, newQty)
+		if err != nil {
+			badRequest(w, err.Error())
+			return
+		}
+		okResp(w, map[string]interface{}{
+			"order":  orderToResponse(order),
+			"trades": tradesToResponse(trades),
+		})
 	default:
-		badRequest(w, "only GET and DELETE are supported")
+		badRequest(w, "only GET, PUT, and DELETE are supported")
 	}
 }
 
@@ -259,7 +323,7 @@ func withLogging(next http.Handler) http.Handler {
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Timestamp, X-Signature")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

@@ -157,6 +157,89 @@ func DecodeOrderCancel(payload []byte) (orderID uint64, instrument string, err e
 	return orderID, instrument, nil
 }
 
+// EncodeOrderAmend encodes an order amendment event.
+func EncodeOrderAmend(buf []byte, seqNo uint64, orderID uint64, instrument string, newPrice int64, newQty uint64) int {
+	off := headerSize
+
+	binary.LittleEndian.PutUint64(buf[off:], orderID)
+	off += 8
+	off += putString(buf[off:], instrument)
+	binary.LittleEndian.PutUint64(buf[off:], uint64(newPrice))
+	off += 8
+	binary.LittleEndian.PutUint64(buf[off:], newQty)
+	off += 8
+
+	totalLen := off
+	binary.LittleEndian.PutUint32(buf[0:], uint32(totalLen))
+	binary.LittleEndian.PutUint64(buf[8:], seqNo)
+	buf[16] = EventOrderAmend
+
+	checksum := crc32.Checksum(buf[8:off], crcTable)
+	binary.LittleEndian.PutUint32(buf[4:], checksum)
+
+	return totalLen
+}
+
+// DecodeOrderAmend decodes an order amendment event from the payload.
+func DecodeOrderAmend(payload []byte) (orderID uint64, instrument string, newPrice int64, newQty uint64, err error) {
+	if len(payload) < 26 {
+		return 0, "", 0, 0, fmt.Errorf("payload too short for order amend")
+	}
+	orderID = binary.LittleEndian.Uint64(payload[0:])
+	instrument, n := getString(payload[8:])
+	off := 8 + n
+	newPrice = int64(binary.LittleEndian.Uint64(payload[off:]))
+	off += 8
+	newQty = binary.LittleEndian.Uint64(payload[off:])
+	return orderID, instrument, newPrice, newQty, nil
+}
+
+// EncodeMassCancel encodes a mass cancel event.
+func EncodeMassCancel(buf []byte, seqNo uint64, instrument, clientID string, side *int8) int {
+	off := headerSize
+
+	off += putString(buf[off:], instrument)
+	off += putString(buf[off:], clientID)
+	if side != nil {
+		buf[off] = 1 // has side
+		off++
+		buf[off] = byte(*side)
+		off++
+	} else {
+		buf[off] = 0 // no side filter
+		off++
+	}
+
+	totalLen := off
+	binary.LittleEndian.PutUint32(buf[0:], uint32(totalLen))
+	binary.LittleEndian.PutUint64(buf[8:], seqNo)
+	buf[16] = EventMassCancel
+
+	checksum := crc32.Checksum(buf[8:off], crcTable)
+	binary.LittleEndian.PutUint32(buf[4:], checksum)
+
+	return totalLen
+}
+
+// DecodeMassCancel decodes a mass cancel event from the payload.
+func DecodeMassCancel(payload []byte) (instrument, clientID string, side *int8, err error) {
+	if len(payload) < 5 {
+		return "", "", nil, fmt.Errorf("payload too short for mass cancel")
+	}
+	off := 0
+	instrument, n := getString(payload[off:])
+	off += n
+	clientID, n = getString(payload[off:])
+	off += n
+	hasSide := payload[off]
+	off++
+	if hasSide == 1 {
+		s := int8(payload[off])
+		side = &s
+	}
+	return instrument, clientID, side, nil
+}
+
 // DecodeRecord parses a raw WAL record and returns its seqNo, event type, and payload.
 // Returns an error if the CRC check fails or the record is malformed.
 func DecodeRecord(buf []byte) (seqNo uint64, eventType uint8, payload []byte, err error) {

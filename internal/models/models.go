@@ -201,6 +201,32 @@ type OrderRequest struct {
 	ExpireAt   time.Time `json:"expire_at,omitempty"`
 }
 
+type AmendRequest struct {
+	OrderID    uint64  `json:"order_id"`
+	Instrument string  `json:"instrument"`
+	Price      float64 `json:"price,omitempty"`
+	Quantity   float64 `json:"quantity,omitempty"`
+}
+
+// ParseSide converts a string to a Side value.
+func ParseSide(s string) (Side, error) {
+	switch s {
+	case "BUY":
+		return SideBuy, nil
+	case "SELL":
+		return SideSell, nil
+	default:
+		return 0, fmt.Errorf("invalid side: %s (must be BUY or SELL)", s)
+	}
+}
+
+// MassCancelFilter specifies criteria for cancelling multiple orders.
+type MassCancelFilter struct {
+	Instrument string
+	ClientID   string
+	Side       *Side // nil = any side
+}
+
 type CancelRequest struct {
 	OrderID    uint64 `json:"order_id"`
 	Instrument string `json:"instrument"`
