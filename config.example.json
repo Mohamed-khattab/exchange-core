@@ -1,0 +1,22 @@
+{
+  "listen_addr": ":8080",
+  "instruments": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD"],
+
+  "tls_enabled": false,
+  "tls_cert_file": "/etc/certs/server.crt",
+  "tls_key_file": "/etc/certs/server.key",
+
+  "wal_enabled": false,
+  "wal_dir": "./data/wal",
+  "wal_sync_mode": "fdatasync",
+  "snapshot_every": 100000,
+
+  "auth_enabled": false,
+  "api_keys_file": "./api_keys.json",
+
+  "rate_limit_enabled": false,
+  "write_limit_per_sec": 100,
+  "read_limit_per_sec": 1000,
+  "write_burst": 200,
+  "read_burst": 2000
+}
