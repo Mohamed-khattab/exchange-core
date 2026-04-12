@@ -276,8 +276,8 @@ func TestFOKSellSide(t *testing.T) {
 
 func TestUnsupportedOrderType(t *testing.T) {
 	ob := orderbook.NewOrderBook("BTC-USD")
-	order := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStop,
-		models.FloatToPrice(50000), models.FloatToPrice(49000), models.FloatToQty(1.0), "stop")
+	order := models.NewOrder("BTC-USD", models.SideBuy, models.OrderType("INVALID_TYPE"),
+		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "bad")
 	_, err := ob.AddOrder(order)
 	if err == nil {
 		t.Error("expected error for unsupported order type")

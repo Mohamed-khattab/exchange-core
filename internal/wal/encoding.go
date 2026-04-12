@@ -115,6 +115,18 @@ func DecodeOrderAdd(payload []byte) (*models.Order, error) {
 	}, nil
 }
 
+// EncodeStopActivation encodes a stop order activation event.
+// Uses the same payload format as EncodeOrderAdd but with EventStopActivation type.
+func EncodeStopActivation(buf []byte, seqNo uint64, order *models.Order) int {
+	n := EncodeOrderAdd(buf, seqNo, order)
+	// Override the event type byte
+	buf[16] = EventStopActivation
+	// Recompute CRC since type byte changed
+	checksum := crc32.Checksum(buf[8:n], crcTable)
+	binary.LittleEndian.PutUint32(buf[4:], checksum)
+	return n
+}
+
 // EncodeOrderCancel encodes an order-cancel event into buf.
 // Returns the number of bytes written.
 func EncodeOrderCancel(buf []byte, seqNo uint64, orderID uint64, instrument string) int {

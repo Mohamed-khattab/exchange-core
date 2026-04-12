@@ -72,7 +72,7 @@ type instrumentWorker struct {
 	breaker       *circuit.InstrumentBreaker // nil if circuit breaker disabled
 }
 
-func newInstrumentWorker(instrument string, mc *metrics.Collector, walCfg WALConfig, stpCfg STPConfig) (*instrumentWorker, error) {
+func newInstrumentWorker(instrument string, mc *metrics.Collector, walCfg WALConfig, stpCfg STPConfig, cbCfg circuit.Config) (*instrumentWorker, error) {
 	book := orderbook.NewOrderBook(instrument)
 	if stpCfg.Enabled {
 		book.SetSTP(true, stpCfg.DefaultMode)
@@ -94,6 +94,10 @@ func newInstrumentWorker(instrument string, mc *metrics.Collector, walCfg WALCon
 			return nil, fmt.Errorf("creating WAL writer for %s: %w", instrument, err)
 		}
 		w.walWriter = writer
+	}
+
+	if cbCfg.Enabled {
+		w.breaker = circuit.NewInstrumentBreaker(instrument, cbCfg)
 	}
 
 	return w, nil
@@ -133,7 +137,7 @@ func (w *instrumentWorker) recover(walDir string) error {
 
 	maxSeq, err := reader.Replay(afterSeqNo, func(seqNo uint64, eventType uint8, payload []byte) error {
 		switch eventType {
-		case wal.EventOrderAdd:
+		case wal.EventOrderAdd, wal.EventStopActivation:
 			order, err := wal.DecodeOrderAdd(payload)
 			if err != nil {
 				return fmt.Errorf("decoding order add: %w", err)
@@ -204,6 +208,16 @@ func (w *instrumentWorker) run() {
 func (w *instrumentWorker) handleCommand(cmd *command) {
 	switch cmd.typ {
 	case cmdAddOrder:
+		// Circuit breaker pre-check (before WAL write)
+		if w.breaker != nil {
+			if err := w.breaker.CheckOrder(cmd.order); err != nil {
+				if cmd.respCh != nil {
+					cmd.respCh <- &commandResult{err: err}
+				}
+				return
+			}
+		}
+
 		// WAL: write BEFORE mutation
 		if w.walWriter != nil {
 			seq := w.walWriter.NextSeqNo()
@@ -233,6 +247,67 @@ func (w *instrumentWorker) handleCommand(cmd *command) {
 				r.Trade.SellOrderID,
 				r.Trade.Aggressor,
 			)
+			// Circuit breaker post-trade check
+			if w.breaker != nil {
+				if w.breaker.RecordTrade(r.Trade.Price, r.Trade.Timestamp) {
+					log.Printf("[CIRCUIT] trading halted for %s: %s", w.instrument, w.breaker.HaltReason())
+				}
+			}
+		}
+
+		// Stop order activation loop (cascade-safe, max 100 iterations)
+		if len(results) > 0 {
+			for cascade := 0; cascade < 100; cascade++ {
+				triggered := w.book.CheckStops()
+				if len(triggered) == 0 {
+					break
+				}
+				newTrades := false
+				for _, stopOrder := range triggered {
+					// Convert stop to its activated type
+					if stopOrder.Type == models.OrderTypeStop {
+						stopOrder.Type = models.OrderTypeMarket
+					} else if stopOrder.Type == models.OrderTypeStopLimit {
+						stopOrder.Type = models.OrderTypeLimit
+					}
+					stopOrder.StopPrice = 0
+					stopOrder.Status = models.StatusNew
+					stopOrder.UpdatedAt = time.Now().UTC()
+
+					// WAL: log activation
+					if w.walWriter != nil {
+						seq := w.walWriter.NextSeqNo()
+						n := wal.EncodeStopActivation(w.walBuf[:], seq, stopOrder)
+						w.walWriter.Append(w.walBuf[:n])
+						w.eventCount++
+					}
+
+					// Circuit breaker check on activated order
+					if w.breaker != nil {
+						if err := w.breaker.CheckOrder(stopOrder); err != nil {
+							stopOrder.Status = models.StatusRejected
+							log.Printf("[engine] activated stop rejected by circuit breaker: %v", err)
+							continue
+						}
+					}
+
+					// Re-enter matching
+					activationResults, _ := w.book.AddOrder(stopOrder)
+					for _, r := range activationResults {
+						results = append(results, r)
+						w.mc.RecordTrade(w.instrument, r.Trade)
+						newTrades = true
+						if w.breaker != nil {
+							if w.breaker.RecordTrade(r.Trade.Price, r.Trade.Timestamp) {
+								log.Printf("[CIRCUIT] trading halted for %s after stop activation", w.instrument)
+							}
+						}
+					}
+				}
+				if !newTrades {
+					break
+				}
+			}
 		}
 
 		if cmd.respCh != nil {
@@ -339,7 +414,7 @@ func NewMatchingEngine(instruments []string, mc *metrics.Collector, cfgs ...Engi
 		cfg:      cfg,
 	}
 	for _, inst := range instruments {
-		w, err := newInstrumentWorker(inst, mc, cfg.WAL, cfg.STP)
+		w, err := newInstrumentWorker(inst, mc, cfg.WAL, cfg.STP, cfg.CircuitBreaker)
 		if err != nil {
 			log.Fatalf("[engine] failed to create worker for %s: %v", inst, err)
 		}

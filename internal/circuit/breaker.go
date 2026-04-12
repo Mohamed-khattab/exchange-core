@@ -135,10 +135,11 @@ func (b *InstrumentBreaker) CheckOrder(order *models.Order) error {
 		}
 	}
 
-	// Fat-finger check
+	// Fat-finger check: notional = price * qty (in human-readable units)
 	if b.cfg.MaxNotional > 0 && order.Price > 0 {
-		notional := order.Price * int64(order.Quantity) / models.PriceScale
-		if notional > b.cfg.MaxNotional {
+		notional := models.PriceToFloat(order.Price) * models.QtyToFloat(order.Quantity)
+		maxNotional := models.PriceToFloat(b.cfg.MaxNotional)
+		if notional > maxNotional {
 			return fmt.Errorf("order notional exceeds maximum allowed")
 		}
 	}

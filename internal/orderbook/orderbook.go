@@ -189,6 +189,13 @@ type OrderBook struct {
 	sequence   uint64                   // monotonic sequence for snapshots
 	lastPrice  int64
 	lastTrade  *models.Trade
+
+	// Self-trade prevention
+	stpEnabled bool
+	stpDefault models.STPMode
+
+	// Stop orders
+	stopBook *StopBook
 }
 
 func NewOrderBook(instrument string) *OrderBook {
@@ -197,11 +204,69 @@ func NewOrderBook(instrument string) *OrderBook {
 		bids:       newPriceTree(true),
 		asks:       newPriceTree(false),
 		orders:     make(map[uint64]*models.Order, 1024),
+		stopBook:   newStopBook(),
 	}
 }
 
 func (ob *OrderBook) nextSeq() uint64 {
 	return atomic.AddUint64(&ob.sequence, 1)
+}
+
+// SetSTP configures self-trade prevention on the order book.
+func (ob *OrderBook) SetSTP(enabled bool, defaultMode models.STPMode) {
+	ob.stpEnabled = enabled
+	ob.stpDefault = defaultMode
+}
+
+// stpAction indicates how to resolve a self-trade conflict.
+type stpAction int
+
+const (
+	stpNone           stpAction = iota
+	stpCancelResting
+	stpCancelIncoming
+	stpCancelBoth
+)
+
+// checkSTP determines if a self-trade conflict exists and what action to take.
+func (ob *OrderBook) checkSTP(aggressor, resting *models.Order) stpAction {
+	if !ob.stpEnabled {
+		return stpNone
+	}
+	if aggressor.ClientID == "" || aggressor.ClientID != resting.ClientID {
+		return stpNone
+	}
+	mode := aggressor.STPMode
+	if mode == models.STPNone {
+		mode = ob.stpDefault
+	}
+	if mode == models.STPNone {
+		return stpNone
+	}
+	switch mode {
+	case models.STPCancelResting:
+		return stpCancelResting
+	case models.STPCancelIncoming:
+		return stpCancelIncoming
+	case models.STPCancelBoth:
+		return stpCancelBoth
+	}
+	return stpNone
+}
+
+// cancelRestingOrder removes a resting order from the book and marks it STP_CANCELLED.
+func (ob *OrderBook) cancelRestingOrder(order *models.Order, level *PriceLevel) {
+	level.Remove(order)
+	delete(ob.orders, order.ID)
+	order.Status = models.StatusSTPCancelled
+	if level.IsEmpty() {
+		if order.Side == models.SideBuy {
+			ob.bids.Remove(level.Price)
+		} else {
+			ob.asks.Remove(level.Price)
+		}
+	}
+	ob.nextSeq()
 }
 
 // ── Public methods (all acquire the lock) ────────────────────────────────────
@@ -219,32 +284,54 @@ func (ob *OrderBook) AddOrder(order *models.Order) ([]*MatchResult, error) {
 		return ob.matchLimit(order)
 	case models.OrderTypeIOC:
 		results, _ := ob.matchLimit(order)
-		// Cancel any remaining quantity
-		if !order.IsFilled() {
+		// Cancel any remaining quantity (but don't overwrite STP status)
+		if !order.IsFilled() && order.Status != models.StatusSTPCancelled {
 			order.Status = models.StatusCancelled
 		}
 		return results, nil
 	case models.OrderTypeFOK:
 		return ob.matchFOK(order)
+	case models.OrderTypeStop, models.OrderTypeStopLimit:
+		order.Status = models.StatusPendingTrigger
+		ob.stopBook.Add(order)
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unsupported order type: %s", order.Type)
 	}
 }
 
-// CancelOrder removes an order from the book. Returns false if order not found.
+// CancelOrder removes an order from the book or stop book. Returns false if not found.
 func (ob *OrderBook) CancelOrder(orderID uint64) (*models.Order, bool) {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
 
+	// Check main book first
 	order, ok := ob.orders[orderID]
-	if !ok {
-		return nil, false
+	if ok {
+		ob.removeFromBook(order)
+		order.Status = models.StatusCancelled
+		delete(ob.orders, orderID)
+		ob.nextSeq()
+		return order, true
 	}
-	ob.removeFromBook(order)
-	order.Status = models.StatusCancelled
-	delete(ob.orders, orderID)
-	ob.nextSeq()
-	return order, true
+
+	// Check stop book
+	order, ok = ob.stopBook.Remove(orderID)
+	if ok {
+		order.Status = models.StatusCancelled
+		ob.nextSeq()
+		return order, true
+	}
+
+	return nil, false
+}
+
+// CheckStops returns stop orders triggered by the current lastPrice.
+// Triggered orders are removed from the stop book.
+func (ob *OrderBook) CheckStops() []*models.Order {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+	return ob.stopBook.TriggeredOrders(ob.lastPrice)
 }
 
 // GetOrder retrieves an order by ID.
@@ -286,23 +373,29 @@ func (ob *OrderBook) Stats() (bidLevels, askLevels, openOrders int, bestBid, bes
 	return
 }
 
-// AllOrders returns a copy of all resting orders in the book.
+// AllOrders returns a copy of all resting orders and pending stop orders.
 // Used for snapshot creation.
 func (ob *OrderBook) AllOrders() []*models.Order {
 	ob.mu.RLock()
 	defer ob.mu.RUnlock()
-	out := make([]*models.Order, 0, len(ob.orders))
+	out := make([]*models.Order, 0, len(ob.orders)+ob.stopBook.Len())
 	for _, o := range ob.orders {
 		out = append(out, o)
 	}
+	out = append(out, ob.stopBook.AllOrders()...)
 	return out
 }
 
 // RestoreOrder inserts an order directly into the book without matching.
-// Used during WAL replay/snapshot restore to reconstruct the book state.
+// Stop orders with PENDING_TRIGGER status are routed to the stop book.
 func (ob *OrderBook) RestoreOrder(order *models.Order) {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
+	if (order.Type == models.OrderTypeStop || order.Type == models.OrderTypeStopLimit) &&
+		order.Status == models.StatusPendingTrigger {
+		ob.stopBook.Add(order)
+		return
+	}
 	ob.addToBook(order)
 }
 
@@ -325,6 +418,25 @@ func (ob *OrderBook) matchLimit(order *models.Order) ([]*MatchResult, error) {
 			}
 		}
 
+		// STP check before filling
+		resting := contra.Peek()
+		if resting == nil {
+			break
+		}
+		action := ob.checkSTP(order, resting)
+		switch action {
+		case stpCancelResting:
+			ob.cancelRestingOrder(resting, contra)
+			continue // try next resting order
+		case stpCancelIncoming:
+			order.Status = models.StatusSTPCancelled
+			return results, nil
+		case stpCancelBoth:
+			ob.cancelRestingOrder(resting, contra)
+			order.Status = models.StatusSTPCancelled
+			return results, nil
+		}
+
 		result := ob.fillAgainst(order, contra)
 		if result != nil {
 			results = append(results, result)
@@ -332,7 +444,7 @@ func (ob *OrderBook) matchLimit(order *models.Order) ([]*MatchResult, error) {
 	}
 
 	// Rest the remaining quantity in the book
-	if order.RemainingQty() > 0 {
+	if order.RemainingQty() > 0 && order.Status != models.StatusSTPCancelled {
 		ob.addToBook(order)
 		order.Status = models.StatusNew
 		if order.FilledQty > 0 {
@@ -355,12 +467,35 @@ func (ob *OrderBook) matchMarket(order *models.Order) ([]*MatchResult, error) {
 		if contra == nil {
 			break // no liquidity
 		}
+
+		// STP check before filling
+		resting := contra.Peek()
+		if resting == nil {
+			break
+		}
+		action := ob.checkSTP(order, resting)
+		switch action {
+		case stpCancelResting:
+			ob.cancelRestingOrder(resting, contra)
+			continue
+		case stpCancelIncoming:
+			order.Status = models.StatusSTPCancelled
+			return results, nil
+		case stpCancelBoth:
+			ob.cancelRestingOrder(resting, contra)
+			order.Status = models.StatusSTPCancelled
+			return results, nil
+		}
+
 		result := ob.fillAgainst(order, contra)
 		if result != nil {
 			results = append(results, result)
 		}
 	}
 
+	if order.Status == models.StatusSTPCancelled {
+		return results, nil
+	}
 	if order.IsFilled() {
 		order.Status = models.StatusFilled
 	} else if order.FilledQty > 0 {

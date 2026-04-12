@@ -12,6 +12,7 @@ import (
 
 	"github.com/trading/matching-engine/internal/api"
 	"github.com/trading/matching-engine/internal/auth"
+	"github.com/trading/matching-engine/internal/circuit"
 	"github.com/trading/matching-engine/internal/config"
 	"github.com/trading/matching-engine/internal/engine"
 	"github.com/trading/matching-engine/internal/metrics"
@@ -44,6 +45,15 @@ func main() {
 			Enabled:     cfg.STPEnabled,
 			DefaultMode: models.STPMode(cfg.STPDefaultMode),
 		},
+		CircuitBreaker: circuit.Config{
+			Enabled:         cfg.CircuitBreakerEnabled,
+			PriceBandPct:    cfg.PriceBandPct,
+			VelocityPct:     cfg.VelocityPct,
+			VelocityWindow:  time.Duration(cfg.VelocityWindowSec) * time.Second,
+			MaxNotional:     models.FloatToPrice(cfg.MaxNotional),
+			AutoResumeAfter: time.Duration(cfg.AutoResumeAfterSec) * time.Second,
+			PreOpenDuration: time.Duration(cfg.PreOpenDurationSec) * time.Second,
+		},
 	}
 	if engineCfg.WAL.Enabled {
 		log.Printf("[BOOT] WAL enabled (dir=%s, sync=%s, snapshot every %d events)",
@@ -51,6 +61,10 @@ func main() {
 	}
 	if engineCfg.STP.Enabled {
 		log.Printf("[BOOT] STP enabled (default mode: %s)", engineCfg.STP.DefaultMode)
+	}
+	if engineCfg.CircuitBreaker.Enabled {
+		log.Printf("[BOOT] Circuit breaker enabled (band=%.1f%%, velocity=%.1f%%)",
+			cfg.PriceBandPct*100, cfg.VelocityPct*100)
 	}
 	me := engine.NewMatchingEngine(cfg.Instruments, mc, engineCfg)
 	me.Start()

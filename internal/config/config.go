@@ -31,6 +31,15 @@ type Config struct {
 	STPEnabled    bool   `json:"stp_enabled"`
 	STPDefaultMode string `json:"stp_default_mode"` // "CANCEL_RESTING" | "CANCEL_INCOMING" | "CANCEL_BOTH"
 
+	// Circuit Breaker
+	CircuitBreakerEnabled bool    `json:"circuit_breaker_enabled"`
+	PriceBandPct          float64 `json:"price_band_pct"`
+	VelocityPct           float64 `json:"velocity_pct"`
+	VelocityWindowSec     int     `json:"velocity_window_sec"`
+	MaxNotional           float64 `json:"max_notional"`
+	AutoResumeAfterSec    int     `json:"auto_resume_after_sec"`
+	PreOpenDurationSec    int     `json:"pre_open_duration_sec"`
+
 	// Rate Limiting
 	RateLimitEnabled bool    `json:"rate_limit_enabled"`
 	WriteLimitPerSec float64 `json:"write_limit_per_sec"`
@@ -56,9 +65,15 @@ func Default() *Config {
 		WALDir:           "./data/wal",
 		WALSyncMode:      "fdatasync",
 		SnapshotEvery:    100_000,
-		WriteLimitPerSec: 100,
-		ReadLimitPerSec:  1000,
-		WriteBurst:       200,
+		PriceBandPct:       0.05,
+		VelocityPct:        0.10,
+		VelocityWindowSec:  60,
+		MaxNotional:        1_000_000,
+		AutoResumeAfterSec: 300,
+		PreOpenDurationSec: 30,
+		WriteLimitPerSec:   100,
+		ReadLimitPerSec:    1000,
+		WriteBurst:         200,
 		ReadBurst:        2000,
 	}
 }
@@ -107,6 +122,41 @@ func Load() (*Config, error) {
 	if v := os.Getenv("ME_SNAPSHOT_EVERY"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.SnapshotEvery = n
+		}
+	}
+
+	// Circuit Breaker
+	if v := os.Getenv("ME_CIRCUIT_BREAKER_ENABLED"); v != "" {
+		cfg.CircuitBreakerEnabled = parseBool(v)
+	}
+	if v := os.Getenv("ME_PRICE_BAND_PCT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			cfg.PriceBandPct = f
+		}
+	}
+	if v := os.Getenv("ME_VELOCITY_PCT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			cfg.VelocityPct = f
+		}
+	}
+	if v := os.Getenv("ME_VELOCITY_WINDOW_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.VelocityWindowSec = n
+		}
+	}
+	if v := os.Getenv("ME_MAX_NOTIONAL"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			cfg.MaxNotional = f
+		}
+	}
+	if v := os.Getenv("ME_AUTO_RESUME_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.AutoResumeAfterSec = n
+		}
+	}
+	if v := os.Getenv("ME_PRE_OPEN_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.PreOpenDurationSec = n
 		}
 	}
 
