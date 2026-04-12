@@ -40,6 +40,10 @@ type Config struct {
 	AutoResumeAfterSec    int     `json:"auto_resume_after_sec"`
 	PreOpenDurationSec    int     `json:"pre_open_duration_sec"`
 
+	// WebSocket
+	WSEnabled    bool `json:"ws_enabled"`
+	WSMaxClients int  `json:"ws_max_clients"`
+
 	// Rate Limiting
 	RateLimitEnabled bool    `json:"rate_limit_enabled"`
 	WriteLimitPerSec float64 `json:"write_limit_per_sec"`
@@ -71,6 +75,7 @@ func Default() *Config {
 		MaxNotional:        1_000_000,
 		AutoResumeAfterSec: 300,
 		PreOpenDurationSec: 30,
+		WSMaxClients:       1000,
 		WriteLimitPerSec:   100,
 		ReadLimitPerSec:    1000,
 		WriteBurst:         200,
@@ -157,6 +162,16 @@ func Load() (*Config, error) {
 	if v := os.Getenv("ME_PRE_OPEN_SEC"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.PreOpenDurationSec = n
+		}
+	}
+
+	// WebSocket
+	if v := os.Getenv("ME_WS_ENABLED"); v != "" {
+		cfg.WSEnabled = parseBool(v)
+	}
+	if v := os.Getenv("ME_WS_MAX_CLIENTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.WSMaxClients = n
 		}
 	}
 

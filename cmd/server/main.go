@@ -18,6 +18,7 @@ import (
 	"github.com/trading/matching-engine/internal/metrics"
 	"github.com/trading/matching-engine/internal/models"
 	"github.com/trading/matching-engine/internal/ratelimit"
+	"github.com/trading/matching-engine/internal/ws"
 )
 
 func main() {
@@ -67,6 +68,22 @@ func main() {
 			cfg.PriceBandPct*100, cfg.VelocityPct*100)
 	}
 	me := engine.NewMatchingEngine(cfg.Instruments, mc, engineCfg)
+
+	// Set up WebSocket hub (before Start so events are captured)
+	var wsHub *ws.Hub
+	if cfg.WSEnabled {
+		wsHub = ws.NewHub(cfg.WSMaxClients)
+		eventCh := make(chan *ws.Event, 50_000)
+		me.SetEventChannel(eventCh)
+		log.Printf("[BOOT] WebSocket enabled (max clients: %d)", cfg.WSMaxClients)
+		// Hub reads from eventCh in its own goroutine
+		go func() {
+			for event := range eventCh {
+				wsHub.Publish(event)
+			}
+		}()
+	}
+
 	me.Start()
 
 	// Build optional middleware
@@ -84,6 +101,10 @@ func main() {
 	// Shutdown context for background goroutines
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 
+	if wsHub != nil {
+		go wsHub.Run(shutdownCtx)
+	}
+
 	if cfg.RateLimitEnabled {
 		reg := ratelimit.NewRegistry(
 			cfg.WriteLimitPerSec, cfg.WriteBurst,
@@ -96,7 +117,7 @@ func main() {
 	}
 
 	// Initialize REST API server
-	router := api.NewRouter(me, mc, authMW, rateLimitMW)
+	router := api.NewRouter(me, mc, authMW, rateLimitMW, wsHub)
 
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,

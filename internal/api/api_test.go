@@ -361,14 +361,14 @@ func TestGetInstrumentStatsUnknown(t *testing.T) {
 
 // ── WebSocket stub ───────────────────────────────────────────────────────────
 
-func TestWebSocketStub(t *testing.T) {
+func TestWebSocketDisabled(t *testing.T) {
 	router := newTestRouter()
 	req := httptest.NewRequest("GET", "/v1/ws", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUpgradeRequired {
-		t.Errorf("status = %d, want 426", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 (WS disabled)", rec.Code)
 	}
 }
 

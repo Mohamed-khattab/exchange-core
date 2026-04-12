@@ -13,6 +13,7 @@ import (
 	"github.com/trading/matching-engine/internal/metrics"
 	"github.com/trading/matching-engine/internal/models"
 	"github.com/trading/matching-engine/internal/orderbook"
+	"github.com/trading/matching-engine/internal/ws"
 )
 
 type apiResponse struct {
@@ -46,10 +47,14 @@ func serverError(w http.ResponseWriter, msg string) {
 type Middleware func(http.Handler) http.Handler
 
 // NewRouter creates the API router with optional middleware layers.
-// Pass nil for any middleware to skip it.
-func NewRouter(me *engine.MatchingEngine, mc *metrics.Collector, authMW, rateLimitMW Middleware) http.Handler {
+// Pass nil for any middleware or hub to skip it.
+func NewRouter(me *engine.MatchingEngine, mc *metrics.Collector, authMW, rateLimitMW Middleware, wsHub ...*ws.Hub) http.Handler {
 	mux := http.NewServeMux()
-	h := &handler{me: me, mc: mc}
+	var hub *ws.Hub
+	if len(wsHub) > 0 {
+		hub = wsHub[0]
+	}
+	h := &handler{me: me, mc: mc, wsHub: hub}
 	mux.HandleFunc("/health", h.health)
 	mux.HandleFunc("/v1/orders", h.ordersHandler)
 	mux.HandleFunc("/v1/orders/", h.orderByIDHandler)
@@ -71,8 +76,9 @@ func NewRouter(me *engine.MatchingEngine, mc *metrics.Collector, authMW, rateLim
 }
 
 type handler struct {
-	me *engine.MatchingEngine
-	mc *metrics.Collector
+	me    *engine.MatchingEngine
+	mc    *metrics.Collector
+	wsHub *ws.Hub
 }
 
 func (h *handler) health(w http.ResponseWriter, _ *http.Request) {
@@ -168,9 +174,13 @@ func (h *handler) instrumentStatsHandler(w http.ResponseWriter, r *http.Request)
 	okResp(w, stats)
 }
 
-func (h *handler) wsHandler(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusUpgradeRequired)
-	_, _ = w.Write([]byte("WebSocket endpoint ready"))
+func (h *handler) wsHandler(w http.ResponseWriter, r *http.Request) {
+	if h.wsHub == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("WebSocket not enabled"))
+		return
+	}
+	h.wsHub.HandleUpgrade(w, r)
 }
 
 func validateOrderRequest(req *models.OrderRequest) error {

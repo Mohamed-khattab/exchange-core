@@ -14,6 +14,7 @@ import (
 	"github.com/trading/matching-engine/internal/models"
 	"github.com/trading/matching-engine/internal/orderbook"
 	"github.com/trading/matching-engine/internal/wal"
+	"github.com/trading/matching-engine/internal/ws"
 )
 
 // WALConfig holds WAL settings passed from the config layer.
@@ -70,6 +71,7 @@ type instrumentWorker struct {
 	eventCount    int                    // events since last snapshot
 	snapshotEvery int                    // 0 = no snapshots
 	breaker       *circuit.InstrumentBreaker // nil if circuit breaker disabled
+	eventCh       chan<- *ws.Event           // nil if WebSocket disabled
 }
 
 func newInstrumentWorker(instrument string, mc *metrics.Collector, walCfg WALConfig, stpCfg STPConfig, cbCfg circuit.Config) (*instrumentWorker, error) {
@@ -253,6 +255,25 @@ func (w *instrumentWorker) handleCommand(cmd *command) {
 					log.Printf("[CIRCUIT] trading halted for %s: %s", w.instrument, w.breaker.HaltReason())
 				}
 			}
+			// Publish trade event to WebSocket hub
+			if w.eventCh != nil {
+				select {
+				case w.eventCh <- &ws.Event{
+					Type:       "trade",
+					Instrument: w.instrument,
+					Data: map[string]interface{}{
+						"id":            r.Trade.ID,
+						"price":         models.PriceToFloat(r.Trade.Price),
+						"quantity":      models.QtyToFloat(r.Trade.Quantity),
+						"buy_order_id":  r.Trade.BuyOrderID,
+						"sell_order_id": r.Trade.SellOrderID,
+						"aggressor":     r.Trade.Aggressor.String(),
+						"timestamp":     r.Trade.Timestamp,
+					},
+				}:
+				default:
+				}
+			}
 		}
 
 		// Stop order activation loop (cascade-safe, max 100 iterations)
@@ -421,6 +442,16 @@ func NewMatchingEngine(instruments []string, mc *metrics.Collector, cfgs ...Engi
 		me.workers[inst] = w
 	}
 	return me
+}
+
+// SetEventChannel sets the WebSocket event channel for all workers.
+// Must be called before Start().
+func (me *MatchingEngine) SetEventChannel(ch chan<- *ws.Event) {
+	me.mu.RLock()
+	defer me.mu.RUnlock()
+	for _, w := range me.workers {
+		w.eventCh = ch
+	}
 }
 
 // Start launches all instrument workers. If WAL is enabled, recovers state first.
