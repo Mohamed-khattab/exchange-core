@@ -87,6 +87,13 @@ func (g *Gateway) handleConnection(conn net.Conn) {
 	handler := NewOrderHandler(g.engine)
 	session := NewSession(conn, g.targetCompID, handler.HandleMessage)
 
+	// Set a logon callback so we register the session as soon as the client logs on
+	session.onLogon = func(s *Session) {
+		g.mu.Lock()
+		g.sessions[s.senderCompID] = s
+		g.mu.Unlock()
+	}
+
 	session.Run() // blocks until disconnection
 
 	// Clean up

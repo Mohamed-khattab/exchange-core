@@ -613,14 +613,14 @@ func (ob *OrderBook) Uncross(eqPrice int64) []*MatchResult {
 		}
 	}
 
-	// Cancel unfilled market orders (they don't rest in continuous mode)
+	// Cancel all non-fully-filled market orders (they don't rest in continuous mode)
 	for _, o := range ob.auctionMarketBuys {
-		if !o.IsFilled() && o.FilledQty == 0 {
+		if !o.IsFilled() {
 			o.Status = models.StatusCancelled
 		}
 	}
 	for _, o := range ob.auctionMarketSells {
-		if !o.IsFilled() && o.FilledQty == 0 {
+		if !o.IsFilled() {
 			o.Status = models.StatusCancelled
 		}
 	}

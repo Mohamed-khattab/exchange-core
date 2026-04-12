@@ -23,6 +23,7 @@ type Session struct {
 	lastRecvTime  time.Time
 	sendMu        sync.Mutex
 	onMessage     func(*Session, *Message) // application message handler
+	onLogon       func(*Session)           // called after successful logon
 	stopCh        chan struct{}
 }
 
@@ -129,6 +130,11 @@ func (s *Session) handleLogon(msg *Message) {
 	resp := NewMessage(MsgTypeLogon)
 	resp.SetField(TagHeartBtInt, fmt.Sprintf("%d", s.heartbeatInt))
 	s.Send(resp)
+
+	// Notify gateway of successful logon (for session registration)
+	if s.onLogon != nil {
+		s.onLogon(s)
+	}
 }
 
 func (s *Session) handleLogout(msg *Message) {
