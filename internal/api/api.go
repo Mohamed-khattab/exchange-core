@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/trading/matching-engine/internal/engine"
@@ -142,6 +143,7 @@ func (h *handler) submitOrderHandler(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "invalid JSON: "+err.Error())
 		return
 	}
+	req.ReceivedAt = time.Now() // nanosecond precision at API ingress
 	if err := validateOrderRequest(&req); err != nil {
 		badRequest(w, err.Error())
 		return
@@ -287,7 +289,9 @@ func orderToResponse(o *models.Order) map[string]interface{} {
 		"price": models.PriceToFloat(o.Price), "quantity": models.QtyToFloat(o.Quantity),
 		"filled_qty": models.QtyToFloat(o.FilledQty), "remaining_qty": models.QtyToFloat(o.RemainingQty()),
 		"avg_fill_price": models.PriceToFloat(o.AvgFillPrice),
-		"created_at": o.CreatedAt, "updated_at": o.UpdatedAt,
+		"received_at": o.ReceivedAt.Format(time.RFC3339Nano),
+		"created_at": o.CreatedAt.Format(time.RFC3339Nano),
+		"updated_at": o.UpdatedAt.Format(time.RFC3339Nano),
 	}
 	if o.StopPrice != 0 {
 		resp["stop_price"] = models.PriceToFloat(o.StopPrice)

@@ -240,6 +240,110 @@ func DecodeMassCancel(payload []byte) (instrument, clientID string, side *int8, 
 	return instrument, clientID, side, nil
 }
 
+// EncodeOrderRejected encodes an order rejection audit event.
+func EncodeOrderRejected(buf []byte, seqNo uint64, orderID uint64, clientID, instrument string, reasonCode uint16, reasonText string) int {
+	off := headerSize
+
+	binary.LittleEndian.PutUint64(buf[off:], orderID)
+	off += 8
+	off += putString(buf[off:], clientID)
+	off += putString(buf[off:], instrument)
+	binary.LittleEndian.PutUint16(buf[off:], reasonCode)
+	off += 2
+	off += putString(buf[off:], reasonText)
+	binary.LittleEndian.PutUint64(buf[off:], uint64(time.Now().UnixNano()))
+	off += 8
+
+	totalLen := off
+	binary.LittleEndian.PutUint32(buf[0:], uint32(totalLen))
+	binary.LittleEndian.PutUint64(buf[8:], seqNo)
+	buf[16] = EventOrderRejected
+
+	checksum := crc32.Checksum(buf[8:off], crcTable)
+	binary.LittleEndian.PutUint32(buf[4:], checksum)
+
+	return totalLen
+}
+
+// DecodeOrderRejected decodes an order rejection event.
+func DecodeOrderRejected(payload []byte) (orderID uint64, clientID, instrument string, reasonCode uint16, reasonText string, err error) {
+	if len(payload) < 12 {
+		return 0, "", "", 0, "", fmt.Errorf("payload too short for order rejected")
+	}
+	off := 0
+	orderID = binary.LittleEndian.Uint64(payload[off:])
+	off += 8
+	clientID, n := getString(payload[off:])
+	off += n
+	instrument, n = getString(payload[off:])
+	off += n
+	reasonCode = binary.LittleEndian.Uint16(payload[off:])
+	off += 2
+	reasonText, _ = getString(payload[off:])
+	return orderID, clientID, instrument, reasonCode, reasonText, nil
+}
+
+// EncodeTradeExecuted encodes a trade execution audit event.
+func EncodeTradeExecuted(buf []byte, seqNo uint64, tradeID uint64, instrument string, buyOrderID, sellOrderID uint64, buyClientID, sellClientID string, price int64, qty uint64, aggressor int8, timestampNano int64) int {
+	off := headerSize
+
+	binary.LittleEndian.PutUint64(buf[off:], tradeID)
+	off += 8
+	off += putString(buf[off:], instrument)
+	binary.LittleEndian.PutUint64(buf[off:], buyOrderID)
+	off += 8
+	binary.LittleEndian.PutUint64(buf[off:], sellOrderID)
+	off += 8
+	off += putString(buf[off:], buyClientID)
+	off += putString(buf[off:], sellClientID)
+	binary.LittleEndian.PutUint64(buf[off:], uint64(price))
+	off += 8
+	binary.LittleEndian.PutUint64(buf[off:], qty)
+	off += 8
+	buf[off] = byte(aggressor)
+	off++
+	binary.LittleEndian.PutUint64(buf[off:], uint64(timestampNano))
+	off += 8
+
+	totalLen := off
+	binary.LittleEndian.PutUint32(buf[0:], uint32(totalLen))
+	binary.LittleEndian.PutUint64(buf[8:], seqNo)
+	buf[16] = EventTradeExecuted
+
+	checksum := crc32.Checksum(buf[8:off], crcTable)
+	binary.LittleEndian.PutUint32(buf[4:], checksum)
+
+	return totalLen
+}
+
+// DecodeTradeExecuted decodes a trade execution event.
+func DecodeTradeExecuted(payload []byte) (tradeID uint64, instrument string, buyOrderID, sellOrderID uint64, buyClientID, sellClientID string, price int64, qty uint64, aggressor int8, timestampNano int64, err error) {
+	if len(payload) < 40 {
+		return 0, "", 0, 0, "", "", 0, 0, 0, 0, fmt.Errorf("payload too short for trade executed")
+	}
+	off := 0
+	tradeID = binary.LittleEndian.Uint64(payload[off:])
+	off += 8
+	instrument, n := getString(payload[off:])
+	off += n
+	buyOrderID = binary.LittleEndian.Uint64(payload[off:])
+	off += 8
+	sellOrderID = binary.LittleEndian.Uint64(payload[off:])
+	off += 8
+	buyClientID, n = getString(payload[off:])
+	off += n
+	sellClientID, n = getString(payload[off:])
+	off += n
+	price = int64(binary.LittleEndian.Uint64(payload[off:]))
+	off += 8
+	qty = binary.LittleEndian.Uint64(payload[off:])
+	off += 8
+	aggressor = int8(payload[off])
+	off++
+	timestampNano = int64(binary.LittleEndian.Uint64(payload[off:]))
+	return
+}
+
 // DecodeRecord parses a raw WAL record and returns its seqNo, event type, and payload.
 // Returns an error if the CRC check fails or the record is malformed.
 func DecodeRecord(buf []byte) (seqNo uint64, eventType uint8, payload []byte, err error) {

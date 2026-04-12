@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/trading/matching-engine/internal/engine"
 	"github.com/trading/matching-engine/internal/models"
@@ -69,6 +70,7 @@ func (h *OrderHandler) handleNewOrder(s *Session, msg *Message) {
 		Type:       fixOrdTypeToEngine(ordType),
 		Price:      price,
 		Quantity:   qty,
+		ReceivedAt: time.Now(),
 	}
 
 	order, trades, err := h.engine.SubmitOrder(req)

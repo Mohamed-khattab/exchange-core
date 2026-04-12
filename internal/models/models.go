@@ -102,6 +102,7 @@ type Order struct {
 	STPMode      STPMode     `json:"stp_mode,omitempty"`
 	TimeInForce  string      `json:"time_in_force"`   // GTC, IOC, FOK, GTD
 	ExpireAt     time.Time   `json:"expire_at,omitempty"`
+	ReceivedAt   time.Time   `json:"received_at,omitempty"` // set at API ingress
 	CreatedAt    time.Time   `json:"created_at"`
 	UpdatedAt    time.Time   `json:"updated_at"`
 }
@@ -169,12 +170,14 @@ type Trade struct {
 	Price        int64     `json:"price"`
 	Quantity     uint64    `json:"quantity"`
 	Timestamp    time.Time `json:"timestamp"`
-	Aggressor    Side      `json:"aggressor"` // which side initiated the match
+	Aggressor    Side      `json:"aggressor"`   // which side initiated the match
+	SequenceNo   uint64    `json:"sequence_no"` // monotonic, MiFID II compliant
 }
 
 func NewTrade(instrument string, buyOrder, sellOrder *Order, price int64, qty uint64, aggressor Side) *Trade {
+	id := NextTradeID()
 	return &Trade{
-		ID:           NextTradeID(),
+		ID:           id,
 		Instrument:   instrument,
 		BuyOrderID:   buyOrder.ID,
 		SellOrderID:  sellOrder.ID,
@@ -184,6 +187,7 @@ func NewTrade(instrument string, buyOrder, sellOrder *Order, price int64, qty ui
 		Quantity:     qty,
 		Timestamp:    time.Now().UTC(),
 		Aggressor:    aggressor,
+		SequenceNo:   id, // monotonic sequence for MiFID II compliance
 	}
 }
 
@@ -198,6 +202,7 @@ type OrderRequest struct {
 	StopPrice  float64   `json:"stop_price,omitempty"`
 	Quantity   float64   `json:"quantity"`
 	STPMode    string    `json:"stp_mode,omitempty"` // "CANCEL_RESTING" | "CANCEL_INCOMING" | "CANCEL_BOTH"
+	ReceivedAt time.Time `json:"-"`                  // set at API ingress, not from client JSON
 	ExpireAt   time.Time `json:"expire_at,omitempty"`
 }
 

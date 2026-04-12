@@ -678,6 +678,9 @@ func (me *MatchingEngine) SubmitOrder(req *models.OrderRequest) (*models.Order, 
 	if req.STPMode != "" {
 		order.STPMode = models.STPMode(req.STPMode)
 	}
+	if !req.ReceivedAt.IsZero() {
+		order.ReceivedAt = req.ReceivedAt
+	}
 
 	respCh := make(chan *commandResult, 1)
 	worker.submit(&command{
