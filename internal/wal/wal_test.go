@@ -269,6 +269,169 @@ func TestSnapshotCRCDetectsCorruption(t *testing.T) {
 	}
 }
 
+func TestParseSyncMode(t *testing.T) {
+	cases := map[string]wal.SyncMode{
+		"fsync":     wal.SyncFsync,
+		"fdatasync": wal.SyncFdatasync,
+		"none":      wal.SyncNone,
+		"unknown":   wal.SyncFdatasync, // default
+	}
+	for input, want := range cases {
+		if got := wal.ParseSyncMode(input); got != want {
+			t.Errorf("ParseSyncMode(%q) = %d, want %d", input, got, want)
+		}
+	}
+}
+
+func TestWriterSetSeqNoAndDir(t *testing.T) {
+	dir := t.TempDir()
+	w, err := wal.NewWriter(dir, "TEST-USD", wal.SyncNone)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	defer w.Close()
+
+	w.SetSeqNo(42)
+	if w.SeqNo() != 42 {
+		t.Errorf("SeqNo() = %d, want 42", w.SeqNo())
+	}
+	if w.Dir() == "" {
+		t.Error("Dir() should not be empty")
+	}
+}
+
+func TestReaderHasDataEmpty(t *testing.T) {
+	dir := t.TempDir()
+	reader := wal.NewReader(dir, "EMPTY-USD")
+	if reader.HasData() {
+		t.Error("HasData() should be false for empty dir")
+	}
+}
+
+func TestReaderHasDataWithFiles(t *testing.T) {
+	dir := t.TempDir()
+	w, _ := wal.NewWriter(dir, "HAS-USD", wal.SyncNone)
+	order := testOrder()
+	var buf [512]byte
+	seq := w.NextSeqNo()
+	n := wal.EncodeOrderAdd(buf[:], seq, order)
+	w.Append(buf[:n])
+	w.Close()
+
+	reader := wal.NewReader(dir, "HAS-USD")
+	if !reader.HasData() {
+		t.Error("HasData() should be true")
+	}
+}
+
+func TestReplayEmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	reader := wal.NewReader(dir, "NOPE-USD")
+	maxSeq, err := reader.Replay(0, func(seqNo uint64, eventType uint8, payload []byte) error {
+		t.Error("should not be called on empty dir")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if maxSeq != 0 {
+		t.Errorf("maxSeq = %d, want 0", maxSeq)
+	}
+}
+
+func TestCleanOldFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "CLEAN-USD")
+	orders := []*models.Order{
+		{
+			ID: 1, ClientID: "c1", Instrument: "CLEAN-USD",
+			Side: models.SideBuy, Type: models.OrderTypeLimit,
+			Status: models.StatusNew, Price: 100, Quantity: 100,
+			TimeInForce: "GTC", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		},
+	}
+	// Write two snapshots
+	wal.WriteSnapshot(dir, 100, orders)
+	wal.WriteSnapshot(dir, 200, orders)
+
+	err := wal.CleanOldFiles(dir, 200)
+	if err != nil {
+		t.Fatalf("CleanOldFiles: %v", err)
+	}
+
+	// Should keep only the latest snapshot
+	files, _ := filepath.Glob(filepath.Join(dir, "snapshot-*.snap"))
+	if len(files) != 1 {
+		t.Errorf("expected 1 snapshot after cleanup, got %d", len(files))
+	}
+}
+
+func TestSnapshotEmptyOrders(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "EMPTY-USD")
+	if err := wal.WriteSnapshot(dir, 0, nil); err != nil {
+		t.Fatalf("WriteSnapshot with nil: %v", err)
+	}
+	seqNo, orders, err := wal.LoadSnapshot(dir)
+	if err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	if seqNo != 0 {
+		t.Errorf("seqNo = %d", seqNo)
+	}
+	if len(orders) != 0 {
+		t.Errorf("expected 0 orders, got %d", len(orders))
+	}
+}
+
+func TestLoadSnapshotNoFiles(t *testing.T) {
+	dir := t.TempDir()
+	seqNo, orders, err := wal.LoadSnapshot(dir)
+	if err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	if seqNo != 0 || len(orders) != 0 {
+		t.Error("expected empty result for dir with no snapshots")
+	}
+}
+
+func TestDecodeRecordTooShort(t *testing.T) {
+	_, _, _, err := wal.DecodeRecord([]byte{1, 2, 3})
+	if err == nil {
+		t.Error("expected error for too-short record")
+	}
+}
+
+func TestWriterWithFsyncMode(t *testing.T) {
+	dir := t.TempDir()
+	w, err := wal.NewWriter(dir, "FSYNC-USD", wal.SyncFsync)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	order := testOrder()
+	var buf [512]byte
+	seq := w.NextSeqNo()
+	n := wal.EncodeOrderAdd(buf[:], seq, order)
+	if err := w.Append(buf[:n]); err != nil {
+		t.Fatalf("Append with fsync: %v", err)
+	}
+	w.Close()
+}
+
+func TestWriterWithFdatasyncMode(t *testing.T) {
+	dir := t.TempDir()
+	w, err := wal.NewWriter(dir, "FDS-USD", wal.SyncFdatasync)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	order := testOrder()
+	var buf [512]byte
+	seq := w.NextSeqNo()
+	n := wal.EncodeOrderAdd(buf[:], seq, order)
+	if err := w.Append(buf[:n]); err != nil {
+		t.Fatalf("Append with fdatasync: %v", err)
+	}
+	w.Close()
+}
+
 func TestReplayAfterSeqNo(t *testing.T) {
 	dir := t.TempDir()
 

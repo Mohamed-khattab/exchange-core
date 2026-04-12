@@ -206,6 +206,89 @@ func TestMissingSignatureHeaders(t *testing.T) {
 	}
 }
 
+func TestInvalidTimestampFormat(t *testing.T) {
+	mw := auth.Middleware(testKeys())
+	handler := mw(okHandler())
+
+	body := `{"instrument":"BTC-USD"}`
+	req := httptest.NewRequest("POST", "/v1/orders", bytes.NewBufferString(body))
+	req.Header.Set("X-API-Key", "trader-1")
+	req.Header.Set("X-Timestamp", "not-a-number")
+	req.Header.Set("X-Signature", "dGVzdA==")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 401 {
+		t.Errorf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInvalidSignatureEncoding(t *testing.T) {
+	mw := auth.Middleware(testKeys())
+	handler := mw(okHandler())
+
+	body := `{"instrument":"BTC-USD"}`
+	ts := fmt.Sprintf("%d", time.Now().UnixMilli())
+	req := httptest.NewRequest("POST", "/v1/orders", bytes.NewBufferString(body))
+	req.Header.Set("X-API-Key", "trader-1")
+	req.Header.Set("X-Timestamp", ts)
+	req.Header.Set("X-Signature", "!!!not-base64!!!")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 401 {
+		t.Errorf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteRequiresTradePermission(t *testing.T) {
+	mw := auth.Middleware(testKeys())
+	handler := mw(okHandler())
+
+	ts, sig := signRequest("DELETE", "/v1/orders/123", "", testSecret)
+	req := httptest.NewRequest("DELETE", "/v1/orders/123?instrument=BTC-USD", nil)
+	req.Header.Set("X-API-Key", "reader-1") // reader only
+	req.Header.Set("X-Timestamp", ts)
+	req.Header.Set("X-Signature", sig)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 403 {
+		t.Errorf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestPublicInstrumentsEndpoint(t *testing.T) {
+	mw := auth.Middleware(testKeys())
+	handler := mw(okHandler())
+
+	req := httptest.NewRequest("GET", "/v1/instruments", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Errorf("expected 200 for public /v1/instruments, got %d", rec.Code)
+	}
+}
+
+func TestMissingSignatureOnly(t *testing.T) {
+	mw := auth.Middleware(testKeys())
+	handler := mw(okHandler())
+
+	body := `{"instrument":"BTC-USD"}`
+	ts := fmt.Sprintf("%d", time.Now().UnixMilli())
+	req := httptest.NewRequest("POST", "/v1/orders", bytes.NewBufferString(body))
+	req.Header.Set("X-API-Key", "trader-1")
+	req.Header.Set("X-Timestamp", ts)
+	// No X-Signature
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 401 {
+		t.Errorf("expected 401, got %d", rec.Code)
+	}
+}
+
 func TestContextPropagation(t *testing.T) {
 	mw := auth.Middleware(testKeys())
 

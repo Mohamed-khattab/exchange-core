@@ -32,6 +32,12 @@ func ClientFromContext(ctx context.Context) (string, bool) {
 	return v, ok
 }
 
+// TestContextKey returns the context key used for API key ID.
+// Exported for use by other packages' tests.
+func TestContextKey() contextKey {
+	return ctxAPIKeyID
+}
+
 // PermissionsFromContext returns the permissions of the authenticated client.
 func PermissionsFromContext(ctx context.Context) []string {
 	v, _ := ctx.Value(ctxPermissions).([]string)
