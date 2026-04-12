@@ -15,6 +15,7 @@ import (
 	"github.com/trading/matching-engine/internal/config"
 	"github.com/trading/matching-engine/internal/engine"
 	"github.com/trading/matching-engine/internal/metrics"
+	"github.com/trading/matching-engine/internal/models"
 	"github.com/trading/matching-engine/internal/ratelimit"
 )
 
@@ -32,17 +33,26 @@ func main() {
 	mc := metrics.NewCollector()
 
 	// Initialize matching engine with configured instruments
-	walCfg := engine.WALConfig{
-		Enabled:       cfg.WALEnabled,
-		Dir:           cfg.WALDir,
-		SyncMode:      cfg.WALSyncMode,
-		SnapshotEvery: cfg.SnapshotEvery,
+	engineCfg := engine.EngineConfig{
+		WAL: engine.WALConfig{
+			Enabled:       cfg.WALEnabled,
+			Dir:           cfg.WALDir,
+			SyncMode:      cfg.WALSyncMode,
+			SnapshotEvery: cfg.SnapshotEvery,
+		},
+		STP: engine.STPConfig{
+			Enabled:     cfg.STPEnabled,
+			DefaultMode: models.STPMode(cfg.STPDefaultMode),
+		},
 	}
-	if walCfg.Enabled {
+	if engineCfg.WAL.Enabled {
 		log.Printf("[BOOT] WAL enabled (dir=%s, sync=%s, snapshot every %d events)",
-			walCfg.Dir, walCfg.SyncMode, walCfg.SnapshotEvery)
+			engineCfg.WAL.Dir, engineCfg.WAL.SyncMode, engineCfg.WAL.SnapshotEvery)
 	}
-	me := engine.NewMatchingEngine(cfg.Instruments, mc, walCfg)
+	if engineCfg.STP.Enabled {
+		log.Printf("[BOOT] STP enabled (default mode: %s)", engineCfg.STP.DefaultMode)
+	}
+	me := engine.NewMatchingEngine(cfg.Instruments, mc, engineCfg)
 	me.Start()
 
 	// Build optional middleware

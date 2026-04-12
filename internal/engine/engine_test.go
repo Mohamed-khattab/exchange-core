@@ -267,14 +267,14 @@ func TestGetOrderUnknownInstrument(t *testing.T) {
 func TestEngineWithWAL(t *testing.T) {
 	dir := t.TempDir()
 	mc := metrics.NewCollector()
-	walCfg := WALConfig{
+	cfg := EngineConfig{WAL: WALConfig{
 		Enabled:       true,
 		Dir:           dir,
 		SyncMode:      "none",
 		SnapshotEvery: 0,
-	}
+	}}
 
-	me := NewMatchingEngine([]string{"BTC-USD"}, mc, walCfg)
+	me := NewMatchingEngine([]string{"BTC-USD"}, mc, cfg)
 	me.Start()
 
 	order, _, err := me.SubmitOrder(&models.OrderRequest{
@@ -306,15 +306,15 @@ func TestEngineWithWAL(t *testing.T) {
 func TestEngineWALRecovery(t *testing.T) {
 	dir := t.TempDir()
 	mc := metrics.NewCollector()
-	walCfg := WALConfig{
+	cfg := EngineConfig{WAL: WALConfig{
 		Enabled:       true,
 		Dir:           dir,
 		SyncMode:      "none",
 		SnapshotEvery: 0,
-	}
+	}}
 
 	// First run: submit orders
-	me1 := NewMatchingEngine([]string{"BTC-USD"}, mc, walCfg)
+	me1 := NewMatchingEngine([]string{"BTC-USD"}, mc, cfg)
 	me1.Start()
 
 	me1.SubmitOrder(&models.OrderRequest{
@@ -330,7 +330,7 @@ func TestEngineWALRecovery(t *testing.T) {
 
 	// Second run: recover from WAL
 	mc2 := metrics.NewCollector()
-	me2 := NewMatchingEngine([]string{"BTC-USD"}, mc2, walCfg)
+	me2 := NewMatchingEngine([]string{"BTC-USD"}, mc2, cfg)
 	me2.Start()
 
 	snap, err := me2.GetOrderBook("BTC-USD", 10)
@@ -350,15 +350,15 @@ func TestEngineWALRecovery(t *testing.T) {
 func TestEngineWALCancelRecovery(t *testing.T) {
 	dir := t.TempDir()
 	mc := metrics.NewCollector()
-	walCfg := WALConfig{
+	cfg := EngineConfig{WAL: WALConfig{
 		Enabled:       true,
 		Dir:           dir,
 		SyncMode:      "none",
 		SnapshotEvery: 0,
-	}
+	}}
 
 	// First run: submit and then cancel
-	me1 := NewMatchingEngine([]string{"BTC-USD"}, mc, walCfg)
+	me1 := NewMatchingEngine([]string{"BTC-USD"}, mc, cfg)
 	me1.Start()
 
 	order, _, _ := me1.SubmitOrder(&models.OrderRequest{
@@ -370,7 +370,7 @@ func TestEngineWALCancelRecovery(t *testing.T) {
 
 	// Second run: book should be empty after replay
 	mc2 := metrics.NewCollector()
-	me2 := NewMatchingEngine([]string{"BTC-USD"}, mc2, walCfg)
+	me2 := NewMatchingEngine([]string{"BTC-USD"}, mc2, cfg)
 	me2.Start()
 
 	snap, _ := me2.GetOrderBook("BTC-USD", 10)
@@ -384,14 +384,14 @@ func TestEngineWALCancelRecovery(t *testing.T) {
 func TestEngineWALSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	mc := metrics.NewCollector()
-	walCfg := WALConfig{
+	cfg := EngineConfig{WAL: WALConfig{
 		Enabled:       true,
 		Dir:           dir,
 		SyncMode:      "none",
 		SnapshotEvery: 3, // snapshot every 3 events
-	}
+	}}
 
-	me := NewMatchingEngine([]string{"BTC-USD"}, mc, walCfg)
+	me := NewMatchingEngine([]string{"BTC-USD"}, mc, cfg)
 	me.Start()
 
 	// Submit 4 orders to trigger a snapshot (3 = threshold)

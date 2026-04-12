@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trading/matching-engine/internal/circuit"
 	"github.com/trading/matching-engine/internal/metrics"
 	"github.com/trading/matching-engine/internal/models"
 	"github.com/trading/matching-engine/internal/orderbook"
@@ -21,6 +22,12 @@ type WALConfig struct {
 	Dir           string
 	SyncMode      string
 	SnapshotEvery int
+}
+
+// STPConfig holds self-trade prevention settings.
+type STPConfig struct {
+	Enabled     bool
+	DefaultMode models.STPMode
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -58,16 +65,22 @@ type instrumentWorker struct {
 	mc            *metrics.Collector
 	stopCh        chan struct{}
 	done          chan struct{}
-	walWriter     *wal.Writer // nil if WAL disabled
-	walBuf        [512]byte   // pre-allocated encode buffer (only used by worker goroutine)
-	eventCount    int         // events since last snapshot
-	snapshotEvery int         // 0 = no snapshots
+	walWriter     *wal.Writer             // nil if WAL disabled
+	walBuf        [512]byte              // pre-allocated encode buffer (only used by worker goroutine)
+	eventCount    int                    // events since last snapshot
+	snapshotEvery int                    // 0 = no snapshots
+	breaker       *circuit.InstrumentBreaker // nil if circuit breaker disabled
 }
 
-func newInstrumentWorker(instrument string, mc *metrics.Collector, walCfg WALConfig) (*instrumentWorker, error) {
+func newInstrumentWorker(instrument string, mc *metrics.Collector, walCfg WALConfig, stpCfg STPConfig) (*instrumentWorker, error) {
+	book := orderbook.NewOrderBook(instrument)
+	if stpCfg.Enabled {
+		book.SetSTP(true, stpCfg.DefaultMode)
+	}
+
 	w := &instrumentWorker{
 		instrument:    instrument,
-		book:          orderbook.NewOrderBook(instrument),
+		book:          book,
 		cmdCh:         make(chan *command, 10_000),
 		mc:            mc,
 		stopCh:        make(chan struct{}),
@@ -293,6 +306,13 @@ func (w *instrumentWorker) stop() {
 
 // ── MatchingEngine ────────────────────────────────────────────────────────────
 
+// EngineConfig holds all engine-level configuration.
+type EngineConfig struct {
+	WAL            WALConfig
+	STP            STPConfig
+	CircuitBreaker circuit.Config
+}
+
 // MatchingEngine manages all instrument workers and provides a unified API
 // for the REST/WS layer to interact with.
 type MatchingEngine struct {
@@ -302,24 +322,24 @@ type MatchingEngine struct {
 	tradesCh    chan *orderbook.MatchResult
 	subscribers []chan *orderbook.MatchResult
 	subMu       sync.Mutex
-	walCfg      WALConfig
+	cfg         EngineConfig
 }
 
 // NewMatchingEngine creates the engine with the given instruments.
-func NewMatchingEngine(instruments []string, mc *metrics.Collector, walCfg ...WALConfig) *MatchingEngine {
-	var cfg WALConfig
-	if len(walCfg) > 0 {
-		cfg = walCfg[0]
+func NewMatchingEngine(instruments []string, mc *metrics.Collector, cfgs ...EngineConfig) *MatchingEngine {
+	var cfg EngineConfig
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
 	}
 
 	me := &MatchingEngine{
 		workers:  make(map[string]*instrumentWorker, len(instruments)),
 		mc:       mc,
 		tradesCh: make(chan *orderbook.MatchResult, 50_000),
-		walCfg:   cfg,
+		cfg:      cfg,
 	}
 	for _, inst := range instruments {
-		w, err := newInstrumentWorker(inst, mc, cfg)
+		w, err := newInstrumentWorker(inst, mc, cfg.WAL, cfg.STP)
 		if err != nil {
 			log.Fatalf("[engine] failed to create worker for %s: %v", inst, err)
 		}
@@ -334,9 +354,9 @@ func (me *MatchingEngine) Start() {
 	defer me.mu.RUnlock()
 
 	// Recover state from WAL before starting workers
-	if me.walCfg.Enabled {
+	if me.cfg.WAL.Enabled {
 		for _, w := range me.workers {
-			if err := w.recover(me.walCfg.Dir); err != nil {
+			if err := w.recover(me.cfg.WAL.Dir); err != nil {
 				log.Fatalf("[engine] recovery failed for %s: %v", w.instrument, err)
 			}
 		}
@@ -380,6 +400,9 @@ func (me *MatchingEngine) SubmitOrder(req *models.OrderRequest) (*models.Order, 
 		models.FloatToQty(req.Quantity),
 		req.ClientID,
 	)
+	if req.STPMode != "" {
+		order.STPMode = models.STPMode(req.STPMode)
+	}
 
 	respCh := make(chan *commandResult, 1)
 	worker.submit(&command{

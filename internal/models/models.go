@@ -35,7 +35,19 @@ const (
 	OrderTypeMarket OrderType = "MARKET"
 	OrderTypeIOC    OrderType = "IOC"    // Immediate-or-Cancel
 	OrderTypeFOK    OrderType = "FOK"    // Fill-or-Kill
-	OrderTypeStop   OrderType = "STOP"   // Stop-Limit
+	OrderTypeStop      OrderType = "STOP"       // Stop-Market
+	OrderTypeStopLimit OrderType = "STOP_LIMIT" // Stop-Limit
+)
+
+// ── STPMode ──────────────────────────────────────────────────────────────────
+
+type STPMode string
+
+const (
+	STPNone           STPMode = ""
+	STPCancelResting  STPMode = "CANCEL_RESTING"
+	STPCancelIncoming STPMode = "CANCEL_INCOMING"
+	STPCancelBoth     STPMode = "CANCEL_BOTH"
 )
 
 // ── OrderStatus ───────────────────────────────────────────────────────────────
@@ -49,6 +61,8 @@ const (
 	StatusCancelled       OrderStatus = "CANCELLED"
 	StatusRejected        OrderStatus = "REJECTED"
 	StatusExpired         OrderStatus = "EXPIRED"
+	StatusSTPCancelled    OrderStatus = "STP_CANCELLED"
+	StatusPendingTrigger  OrderStatus = "PENDING_TRIGGER"
 )
 
 // ── Order ─────────────────────────────────────────────────────────────────────
@@ -85,6 +99,7 @@ type Order struct {
 	Quantity     uint64      `json:"quantity"`        // in base asset units (e.g., satoshis)
 	FilledQty    uint64      `json:"filled_qty"`
 	AvgFillPrice int64       `json:"avg_fill_price"`  // volume-weighted avg fill price
+	STPMode      STPMode     `json:"stp_mode,omitempty"`
 	TimeInForce  string      `json:"time_in_force"`   // GTC, IOC, FOK, GTD
 	ExpireAt     time.Time   `json:"expire_at,omitempty"`
 	CreatedAt    time.Time   `json:"created_at"`
@@ -178,10 +193,11 @@ type OrderRequest struct {
 	ClientID   string    `json:"client_id"`
 	Instrument string    `json:"instrument"`
 	Side       string    `json:"side"`       // "BUY" | "SELL"
-	Type       string    `json:"type"`       // "LIMIT" | "MARKET" | "IOC" | "FOK"
+	Type       string    `json:"type"`       // "LIMIT" | "MARKET" | "IOC" | "FOK" | "STOP" | "STOP_LIMIT"
 	Price      float64   `json:"price"`
 	StopPrice  float64   `json:"stop_price,omitempty"`
 	Quantity   float64   `json:"quantity"`
+	STPMode    string    `json:"stp_mode,omitempty"` // "CANCEL_RESTING" | "CANCEL_INCOMING" | "CANCEL_BOTH"
 	ExpireAt   time.Time `json:"expire_at,omitempty"`
 }
 

@@ -27,6 +27,10 @@ type Config struct {
 	AuthEnabled bool   `json:"auth_enabled"`
 	APIKeysFile string `json:"api_keys_file"`
 
+	// STP
+	STPEnabled    bool   `json:"stp_enabled"`
+	STPDefaultMode string `json:"stp_default_mode"` // "CANCEL_RESTING" | "CANCEL_INCOMING" | "CANCEL_BOTH"
+
 	// Rate Limiting
 	RateLimitEnabled bool    `json:"rate_limit_enabled"`
 	WriteLimitPerSec float64 `json:"write_limit_per_sec"`
@@ -106,6 +110,14 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// STP
+	if v := os.Getenv("ME_STP_ENABLED"); v != "" {
+		cfg.STPEnabled = parseBool(v)
+	}
+	if v := os.Getenv("ME_STP_DEFAULT_MODE"); v != "" {
+		cfg.STPDefaultMode = v
+	}
+
 	// Auth
 	if v := os.Getenv("ME_AUTH_ENABLED"); v != "" {
 		cfg.AuthEnabled = parseBool(v)
@@ -179,6 +191,13 @@ func (c *Config) Validate() error {
 	}
 	if c.AuthEnabled && c.APIKeysFile == "" {
 		return fmt.Errorf("api_keys_file required when auth is enabled")
+	}
+	if c.STPEnabled && c.STPDefaultMode != "" {
+		switch c.STPDefaultMode {
+		case "CANCEL_RESTING", "CANCEL_INCOMING", "CANCEL_BOTH":
+		default:
+			return fmt.Errorf("stp_default_mode must be CANCEL_RESTING, CANCEL_INCOMING, or CANCEL_BOTH")
+		}
 	}
 	return nil
 }

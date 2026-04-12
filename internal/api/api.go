@@ -180,9 +180,9 @@ func validateOrderRequest(req *models.OrderRequest) error {
 	if req.Side != "BUY" && req.Side != "SELL" {
 		return fmt.Errorf("side must be BUY or SELL")
 	}
-	valid := map[string]bool{"LIMIT": true, "MARKET": true, "IOC": true, "FOK": true}
+	valid := map[string]bool{"LIMIT": true, "MARKET": true, "IOC": true, "FOK": true, "STOP": true, "STOP_LIMIT": true}
 	if !valid[req.Type] {
-		return fmt.Errorf("type must be LIMIT, MARKET, IOC, or FOK")
+		return fmt.Errorf("type must be LIMIT, MARKET, IOC, FOK, STOP, or STOP_LIMIT")
 	}
 	if req.Quantity <= 0 {
 		return fmt.Errorf("quantity must be positive")
@@ -190,11 +190,24 @@ func validateOrderRequest(req *models.OrderRequest) error {
 	if req.Type == "LIMIT" && req.Price <= 0 {
 		return fmt.Errorf("price must be positive for LIMIT orders")
 	}
+	if (req.Type == "STOP" || req.Type == "STOP_LIMIT") && req.StopPrice <= 0 {
+		return fmt.Errorf("stop_price must be positive for STOP orders")
+	}
+	if req.Type == "STOP_LIMIT" && req.Price <= 0 {
+		return fmt.Errorf("price must be positive for STOP_LIMIT orders")
+	}
+	if req.STPMode != "" {
+		switch req.STPMode {
+		case "CANCEL_RESTING", "CANCEL_INCOMING", "CANCEL_BOTH":
+		default:
+			return fmt.Errorf("stp_mode must be CANCEL_RESTING, CANCEL_INCOMING, or CANCEL_BOTH")
+		}
+	}
 	return nil
 }
 
 func orderToResponse(o *models.Order) map[string]interface{} {
-	return map[string]interface{}{
+	resp := map[string]interface{}{
 		"id": o.ID, "client_id": o.ClientID, "instrument": o.Instrument,
 		"side": o.Side.String(), "type": string(o.Type), "status": string(o.Status),
 		"price": models.PriceToFloat(o.Price), "quantity": models.QtyToFloat(o.Quantity),
@@ -202,6 +215,13 @@ func orderToResponse(o *models.Order) map[string]interface{} {
 		"avg_fill_price": models.PriceToFloat(o.AvgFillPrice),
 		"created_at": o.CreatedAt, "updated_at": o.UpdatedAt,
 	}
+	if o.StopPrice != 0 {
+		resp["stop_price"] = models.PriceToFloat(o.StopPrice)
+	}
+	if o.STPMode != "" {
+		resp["stp_mode"] = string(o.STPMode)
+	}
+	return resp
 }
 
 func tradesToResponse(results []*orderbook.MatchResult) []map[string]interface{} {
