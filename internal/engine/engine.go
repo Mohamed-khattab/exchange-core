@@ -74,13 +74,13 @@ type instrumentWorker struct {
 	mc            *metrics.Collector
 	stopCh        chan struct{}
 	done          chan struct{}
-	walWriter     *wal.Writer             // nil if WAL disabled
-	walBuf        [512]byte              // pre-allocated encode buffer (only used by worker goroutine)
-	eventCount    int                    // events since last snapshot
-	snapshotEvery int                    // 0 = no snapshots
-	breaker       *circuit.InstrumentBreaker    // nil if circuit breaker disabled
-	session       *session.InstrumentSession   // nil if sessions disabled
-	eventCh       chan<- *ws.Event              // nil if WebSocket disabled
+	walWriter     *wal.Writer                // nil if WAL disabled
+	walBuf        [512]byte                  // pre-allocated encode buffer (only used by worker goroutine)
+	eventCount    int                        // events since last snapshot
+	snapshotEvery int                        // 0 = no snapshots
+	breaker       *circuit.InstrumentBreaker // nil if circuit breaker disabled
+	session       *session.InstrumentSession // nil if sessions disabled
+	eventCh       chan<- *ws.Event           // nil if WebSocket disabled
 }
 
 func newInstrumentWorker(instrument string, mc *metrics.Collector, walCfg WALConfig, stpCfg STPConfig, cbCfg circuit.Config, sesCfg SessionConfig) (*instrumentWorker, error) {
@@ -161,7 +161,7 @@ func (w *instrumentWorker) recover(walDir string) error {
 				maxOrderID = order.ID
 			}
 			// Re-process the order through the matching engine
-			results, _ := w.book.AddOrder(order)
+			results, _ := w.book.AddOrder(order, seqNo)
 			// Track trade IDs from replay
 			for _, r := range results {
 				if r.Trade.ID > maxTradeID {
@@ -171,7 +171,7 @@ func (w *instrumentWorker) recover(walDir string) error {
 			replayCount++
 
 		case wal.EventOrderCancel:
-			orderID, _, err := wal.DecodeOrderCancel(payload)
+			orderID, _, _, err := wal.DecodeOrderCancel(payload)
 			if err != nil {
 				return fmt.Errorf("decoding order cancel: %w", err)
 			}
@@ -179,15 +179,15 @@ func (w *instrumentWorker) recover(walDir string) error {
 			replayCount++
 
 		case wal.EventOrderAmend:
-			orderID, _, newPrice, newQty, err := wal.DecodeOrderAmend(payload)
+			orderID, _, newPrice, newQty, _, err := wal.DecodeOrderAmend(payload)
 			if err != nil {
 				return fmt.Errorf("decoding order amend: %w", err)
 			}
-			w.book.AmendOrder(orderID, newPrice, newQty)
+			w.book.AmendOrder(orderID, newPrice, newQty, seqNo)
 			replayCount++
 
 		case wal.EventMassCancel:
-			_, clientID, sidePtr, err := wal.DecodeMassCancel(payload)
+			_, clientID, sidePtr, _, err := wal.DecodeMassCancel(payload)
 			if err != nil {
 				return fmt.Errorf("decoding mass cancel: %w", err)
 			}
@@ -289,9 +289,10 @@ func (w *instrumentWorker) handleCommand(cmd *command) {
 		}
 
 		// WAL: write BEFORE mutation
+		var walSeq uint64
 		if w.walWriter != nil {
-			seq := w.walWriter.NextSeqNo()
-			n := wal.EncodeOrderAdd(w.walBuf[:], seq, cmd.order)
+			walSeq = w.walWriter.NextSeqNo()
+			n := wal.EncodeOrderAdd(w.walBuf[:], walSeq, cmd.order)
 			if err := w.walWriter.Append(w.walBuf[:n]); err != nil {
 				log.Printf("[engine] WAL write error for %s: %v", w.instrument, err)
 				if cmd.respCh != nil {
@@ -303,7 +304,7 @@ func (w *instrumentWorker) handleCommand(cmd *command) {
 		}
 
 		start := time.Now()
-		results, err := w.book.AddOrder(cmd.order)
+		results, err := w.book.AddOrder(cmd.order, walSeq)
 		latency := time.Since(start)
 
 		w.mc.RecordOrderProcessed(w.instrument, latency)
@@ -364,9 +365,10 @@ func (w *instrumentWorker) handleCommand(cmd *command) {
 					stopOrder.UpdatedAt = time.Now().UTC()
 
 					// WAL: log activation
+					var actWalSeq uint64
 					if w.walWriter != nil {
-						seq := w.walWriter.NextSeqNo()
-						n := wal.EncodeStopActivation(w.walBuf[:], seq, stopOrder)
+						actWalSeq = w.walWriter.NextSeqNo()
+						n := wal.EncodeStopActivation(w.walBuf[:], actWalSeq, stopOrder)
 						w.walWriter.Append(w.walBuf[:n])
 						w.eventCount++
 					}
@@ -381,7 +383,7 @@ func (w *instrumentWorker) handleCommand(cmd *command) {
 					}
 
 					// Re-enter matching
-					activationResults, _ := w.book.AddOrder(stopOrder)
+					activationResults, _ := w.book.AddOrder(stopOrder, actWalSeq)
 					for _, r := range activationResults {
 						results = append(results, r)
 						w.mc.RecordTrade(w.instrument, r.Trade)
@@ -451,10 +453,11 @@ func (w *instrumentWorker) handleCommand(cmd *command) {
 			}
 		}
 
+		var amendWalSeq uint64
 		// WAL: write BEFORE mutation
 		if w.walWriter != nil {
-			seq := w.walWriter.NextSeqNo()
-			n := wal.EncodeOrderAmend(w.walBuf[:], seq, cmd.amendID, w.instrument, cmd.amendPrice, cmd.amendQty)
+			amendWalSeq = w.walWriter.NextSeqNo()
+			n := wal.EncodeOrderAmend(w.walBuf[:], amendWalSeq, cmd.amendID, w.instrument, cmd.amendPrice, cmd.amendQty)
 			if err := w.walWriter.Append(w.walBuf[:n]); err != nil {
 				if cmd.respCh != nil {
 					cmd.respCh <- &commandResult{err: fmt.Errorf("WAL write failed: %w", err)}
@@ -464,7 +467,7 @@ func (w *instrumentWorker) handleCommand(cmd *command) {
 			w.eventCount++
 		}
 
-		order, trades, err := w.book.AmendOrder(cmd.amendID, cmd.amendPrice, cmd.amendQty)
+		order, trades, err := w.book.AmendOrder(cmd.amendID, cmd.amendPrice, cmd.amendQty, amendWalSeq)
 		if err != nil {
 			if cmd.respCh != nil {
 				cmd.respCh <- &commandResult{err: err}

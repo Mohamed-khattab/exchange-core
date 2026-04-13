@@ -92,7 +92,7 @@ func TestEncodeDecodeOrderCancel(t *testing.T) {
 		t.Errorf("eventType = %d, want %d", eventType, wal.EventOrderCancel)
 	}
 
-	orderID, instrument, err := wal.DecodeOrderCancel(payload)
+	orderID, instrument, tsNano, err := wal.DecodeOrderCancel(payload)
 	if err != nil {
 		t.Fatalf("DecodeOrderCancel: %v", err)
 	}
@@ -101,6 +101,9 @@ func TestEncodeDecodeOrderCancel(t *testing.T) {
 	}
 	if instrument != "BTC-USD" {
 		t.Errorf("instrument = %s, want BTC-USD", instrument)
+	}
+	if tsNano == 0 {
+		t.Error("expected non-zero event timestamp on encoded cancel")
 	}
 }
 

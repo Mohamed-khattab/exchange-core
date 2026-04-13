@@ -31,10 +31,10 @@ func (s Side) Opposite() Side {
 type OrderType string
 
 const (
-	OrderTypeLimit  OrderType = "LIMIT"
-	OrderTypeMarket OrderType = "MARKET"
-	OrderTypeIOC    OrderType = "IOC"    // Immediate-or-Cancel
-	OrderTypeFOK    OrderType = "FOK"    // Fill-or-Kill
+	OrderTypeLimit     OrderType = "LIMIT"
+	OrderTypeMarket    OrderType = "MARKET"
+	OrderTypeIOC       OrderType = "IOC"        // Immediate-or-Cancel
+	OrderTypeFOK       OrderType = "FOK"        // Fill-or-Kill
 	OrderTypeStop      OrderType = "STOP"       // Stop-Market
 	OrderTypeStopLimit OrderType = "STOP_LIMIT" // Stop-Limit
 )
@@ -89,18 +89,18 @@ func SetMinOrderID(id uint64) {
 
 type Order struct {
 	ID           uint64      `json:"id"`
-	ClientID     string      `json:"client_id"`      // client-assigned idempotency key
+	ClientID     string      `json:"client_id"` // client-assigned idempotency key
 	Instrument   string      `json:"instrument"`
 	Side         Side        `json:"side"`
 	Type         OrderType   `json:"type"`
 	Status       OrderStatus `json:"status"`
-	Price        int64       `json:"price"`           // fixed-point, scaled by 1e8
-	StopPrice    int64       `json:"stop_price"`      // for stop orders
-	Quantity     uint64      `json:"quantity"`        // in base asset units (e.g., satoshis)
+	Price        int64       `json:"price"`      // fixed-point, scaled by 1e8
+	StopPrice    int64       `json:"stop_price"` // for stop orders
+	Quantity     uint64      `json:"quantity"`   // in base asset units (e.g., satoshis)
 	FilledQty    uint64      `json:"filled_qty"`
-	AvgFillPrice int64       `json:"avg_fill_price"`  // volume-weighted avg fill price
+	AvgFillPrice int64       `json:"avg_fill_price"` // volume-weighted avg fill price
 	STPMode      STPMode     `json:"stp_mode,omitempty"`
-	TimeInForce  string      `json:"time_in_force"`   // GTC, IOC, FOK, GTD
+	TimeInForce  string      `json:"time_in_force"` // GTC, IOC, FOK, GTD
 	ExpireAt     time.Time   `json:"expire_at,omitempty"`
 	ReceivedAt   time.Time   `json:"received_at,omitempty"` // set at API ingress
 	CreatedAt    time.Time   `json:"created_at"`
@@ -171,11 +171,15 @@ type Trade struct {
 	Quantity     uint64    `json:"quantity"`
 	Timestamp    time.Time `json:"timestamp"`
 	Aggressor    Side      `json:"aggressor"`   // which side initiated the match
-	SequenceNo   uint64    `json:"sequence_no"` // monotonic, MiFID II compliant
+	SequenceNo   uint64    `json:"sequence_no"` // WAL transaction sequence when set by engine; otherwise trade ID in tests
 }
 
-func NewTrade(instrument string, buyOrder, sellOrder *Order, price int64, qty uint64, aggressor Side) *Trade {
+func NewTrade(instrument string, buyOrder, sellOrder *Order, price int64, qty uint64, aggressor Side, walSeq uint64) *Trade {
 	id := NextTradeID()
+	seqNo := walSeq
+	if seqNo == 0 {
+		seqNo = id // no WAL context (e.g. unit tests)
+	}
 	return &Trade{
 		ID:           id,
 		Instrument:   instrument,
@@ -187,7 +191,7 @@ func NewTrade(instrument string, buyOrder, sellOrder *Order, price int64, qty ui
 		Quantity:     qty,
 		Timestamp:    time.Now().UTC(),
 		Aggressor:    aggressor,
-		SequenceNo:   id, // monotonic sequence for MiFID II compliance
+		SequenceNo:   seqNo,
 	}
 }
 
@@ -196,8 +200,8 @@ func NewTrade(instrument string, buyOrder, sellOrder *Order, price int64, qty ui
 type OrderRequest struct {
 	ClientID   string    `json:"client_id"`
 	Instrument string    `json:"instrument"`
-	Side       string    `json:"side"`       // "BUY" | "SELL"
-	Type       string    `json:"type"`       // "LIMIT" | "MARKET" | "IOC" | "FOK" | "STOP" | "STOP_LIMIT"
+	Side       string    `json:"side"` // "BUY" | "SELL"
+	Type       string    `json:"type"` // "LIMIT" | "MARKET" | "IOC" | "FOK" | "STOP" | "STOP_LIMIT"
 	Price      float64   `json:"price"`
 	StopPrice  float64   `json:"stop_price,omitempty"`
 	Quantity   float64   `json:"quantity"`
@@ -254,7 +258,7 @@ type OrderBookSnapshot struct {
 // ── Price scaling helpers ─────────────────────────────────────────────────────
 
 const PriceScale = 1_000_000_00 // 8 decimal places
-const QtyScale   = 1_000_000_00 // 8 decimal places (satoshis)
+const QtyScale = 1_000_000_00   // 8 decimal places (satoshis)
 
 func FloatToPrice(f float64) int64 {
 	return int64(f * PriceScale)

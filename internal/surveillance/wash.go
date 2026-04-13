@@ -2,7 +2,6 @@ package surveillance
 
 import (
 	"fmt"
-	"time"
 )
 
 // WashTradingDetector detects self-trading attempts.
@@ -32,16 +31,20 @@ func (d *WashTradingDetector) OnEvent(event *Event) []Alert {
 
 	case EventTradeExecuted:
 		if event.Trade != nil && event.Trade.BuyClientID == event.Trade.SellClientID && event.Trade.BuyClientID != "" {
+			ts := event.Timestamp
+			if !event.Trade.Timestamp.IsZero() {
+				ts = event.Trade.Timestamp
+			}
 			return []Alert{{
 				DetectorName: d.Name(),
 				Severity:     "CRITICAL",
 				Instrument:   event.Instrument,
 				ClientID:     event.Trade.BuyClientID,
 				Description:  fmt.Sprintf("wash trade detected: client %s traded with themselves (trade %d)", event.Trade.BuyClientID, event.Trade.ID),
-				Timestamp:    time.Now(),
+				Timestamp:    ts,
 				Evidence: map[string]interface{}{
-					"trade_id":     event.Trade.ID,
-					"buy_order_id": event.Trade.BuyOrderID,
+					"trade_id":      event.Trade.ID,
+					"buy_order_id":  event.Trade.BuyOrderID,
 					"sell_order_id": event.Trade.SellOrderID,
 				},
 			}}

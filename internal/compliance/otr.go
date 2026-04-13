@@ -145,8 +145,32 @@ func (t *OTRTracker) CheckRatio(clientID, instrument string) float64 {
 // CheckAndRecord records an order and checks if the OTR threshold is exceeded.
 // Returns true if the order should be rejected (only when action is OTRReject).
 func (t *OTRTracker) CheckAndRecord(clientID, instrument string) bool {
-	t.RecordOrder(clientID, instrument)
-	ratio := t.CheckRatio(clientID, instrument)
+	if clientID == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	c := t.getOrCreate(clientID, instrument)
+	t.advance(c)
+	c.orders[c.head]++
+
+	var totalOrders, totalTrades uint32
+	for i := 0; i < t.window; i++ {
+		idx := (c.head - i + 60) % 60
+		totalOrders += c.orders[idx]
+		totalTrades += c.trades[idx]
+	}
+
+	var ratio float64
+	if totalTrades == 0 {
+		if totalOrders == 0 {
+			ratio = 0
+		} else {
+			ratio = float64(totalOrders)
+		}
+	} else {
+		ratio = float64(totalOrders) / float64(totalTrades)
+	}
 
 	if ratio > t.threshold {
 		if t.onAlert != nil {

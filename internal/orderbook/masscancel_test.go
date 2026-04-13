@@ -12,11 +12,11 @@ func TestMassCancelAllOrders(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		ob.AddOrder(models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
-			models.FloatToPrice(49000+float64(i)*100), 0, models.FloatToQty(1.0), "c1"))
+			models.FloatToPrice(49000+float64(i)*100), 0, models.FloatToQty(1.0), "c1"), 0)
 	}
 	for i := 0; i < 3; i++ {
 		ob.AddOrder(models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
-			models.FloatToPrice(51000+float64(i)*100), 0, models.FloatToQty(1.0), "c2"))
+			models.FloatToPrice(51000+float64(i)*100), 0, models.FloatToQty(1.0), "c2"), 0)
 	}
 
 	cancelled := ob.MassCancel(models.MassCancelFilter{Instrument: "BTC-USD"})
@@ -34,11 +34,11 @@ func TestMassCancelByClientID(t *testing.T) {
 	ob := orderbook.NewOrderBook("BTC-USD")
 
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
-		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "alice"))
+		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "alice"), 0)
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
-		models.FloatToPrice(48000), 0, models.FloatToQty(1.0), "bob"))
+		models.FloatToPrice(48000), 0, models.FloatToQty(1.0), "bob"), 0)
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
-		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "alice"))
+		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "alice"), 0)
 
 	cancelled := ob.MassCancel(models.MassCancelFilter{
 		Instrument: "BTC-USD",
@@ -58,11 +58,11 @@ func TestMassCancelBySide(t *testing.T) {
 	ob := orderbook.NewOrderBook("BTC-USD")
 
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
-		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "c1"))
+		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "c1"), 0)
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
-		models.FloatToPrice(48000), 0, models.FloatToQty(1.0), "c2"))
+		models.FloatToPrice(48000), 0, models.FloatToQty(1.0), "c2"), 0)
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
-		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "c3"))
+		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "c3"), 0)
 
 	side := models.SideBuy
 	cancelled := ob.MassCancel(models.MassCancelFilter{
@@ -83,9 +83,9 @@ func TestMassCancelIncludesStopOrders(t *testing.T) {
 	ob := orderbook.NewOrderBook("BTC-USD")
 
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
-		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "lim"))
+		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "lim"), 0)
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStop,
-		0, models.FloatToPrice(51000), models.FloatToQty(1.0), "stop"))
+		0, models.FloatToPrice(51000), models.FloatToQty(1.0), "stop"), 0)
 
 	cancelled := ob.MassCancel(models.MassCancelFilter{Instrument: "BTC-USD"})
 	if len(cancelled) != 2 {
@@ -105,7 +105,7 @@ func TestMassCancelNoMatches(t *testing.T) {
 	ob := orderbook.NewOrderBook("BTC-USD")
 
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
-		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "alice"))
+		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "alice"), 0)
 
 	cancelled := ob.MassCancel(models.MassCancelFilter{
 		Instrument: "BTC-USD",
@@ -120,11 +120,11 @@ func TestMassCancelCombinedFilter(t *testing.T) {
 	ob := orderbook.NewOrderBook("BTC-USD")
 
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
-		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "alice"))
+		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "alice"), 0)
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
-		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "alice"))
+		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "alice"), 0)
 	ob.AddOrder(models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
-		models.FloatToPrice(48000), 0, models.FloatToQty(1.0), "bob"))
+		models.FloatToPrice(48000), 0, models.FloatToQty(1.0), "bob"), 0)
 
 	side := models.SideBuy
 	cancelled := ob.MassCancel(models.MassCancelFilter{

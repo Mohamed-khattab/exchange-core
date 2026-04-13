@@ -151,7 +151,7 @@ func TestSetMinOrderIDConcurrent(t *testing.T) {
 func TestNewTrade(t *testing.T) {
 	buy := &Order{ID: 1, ClientID: "buyer"}
 	sell := &Order{ID: 2, ClientID: "seller"}
-	trade := NewTrade("BTC-USD", buy, sell, 50000, 100, SideBuy)
+	trade := NewTrade("BTC-USD", buy, sell, 50000, 100, SideBuy, 0)
 
 	if trade.ID == 0 {
 		t.Error("trade ID should be non-zero")
@@ -182,6 +182,9 @@ func TestNewTrade(t *testing.T) {
 	}
 	if trade.Timestamp.IsZero() {
 		t.Error("Timestamp should be set")
+	}
+	if trade.SequenceNo != trade.ID {
+		t.Errorf("SequenceNo = %d with walSeq=0 should match trade ID %d", trade.SequenceNo, trade.ID)
 	}
 }
 

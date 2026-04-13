@@ -12,7 +12,7 @@ func TestStopOrderAdded(t *testing.T) {
 
 	stop := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStop,
 		0, models.FloatToPrice(51000), models.FloatToQty(1.0), "stop-buyer")
-	results, err := ob.AddOrder(stop)
+	results, err := ob.AddOrder(stop, 0)
 
 	if err != nil {
 		t.Fatalf("AddOrder stop: %v", err)
@@ -30,7 +30,7 @@ func TestStopLimitOrderAdded(t *testing.T) {
 
 	stop := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStopLimit,
 		models.FloatToPrice(51500), models.FloatToPrice(51000), models.FloatToQty(1.0), "sl-buyer")
-	results, err := ob.AddOrder(stop)
+	results, err := ob.AddOrder(stop, 0)
 
 	if err != nil {
 		t.Fatalf("AddOrder stop-limit: %v", err)
@@ -49,17 +49,17 @@ func TestBuyStopTriggersWhenPriceRises(t *testing.T) {
 	// Add a buy stop at 51000
 	stop := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStop,
 		0, models.FloatToPrice(51000), models.FloatToQty(1.0), "stop-buyer")
-	ob.AddOrder(stop)
+	ob.AddOrder(stop, 0)
 
 	// Add a resting sell at 51000
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "seller")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	// Buy at 51000 to create a trade that moves lastPrice to 51000
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "buyer")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 trade, got %d", len(results))
@@ -81,17 +81,17 @@ func TestSellStopTriggersWhenPriceDrops(t *testing.T) {
 	// Add a sell stop at 49000
 	stop := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeStop,
 		0, models.FloatToPrice(49000), models.FloatToQty(1.0), "stop-seller")
-	ob.AddOrder(stop)
+	ob.AddOrder(stop, 0)
 
 	// Add a resting buy at 49000
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "buyer")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 
 	// Sell at 49000 to move lastPrice down
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "seller")
-	results, _ := ob.AddOrder(sell)
+	results, _ := ob.AddOrder(sell, 0)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 trade, got %d", len(results))
@@ -112,15 +112,15 @@ func TestStopNotTriggeredWhenPriceNotCrossed(t *testing.T) {
 	// Buy stop at 55000
 	stop := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStop,
 		0, models.FloatToPrice(55000), models.FloatToQty(1.0), "stop-buyer")
-	ob.AddOrder(stop)
+	ob.AddOrder(stop, 0)
 
 	// Trade at 50000 (below stop price)
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "seller")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "buyer")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 
 	triggered := ob.CheckStops()
 	if len(triggered) != 0 {
@@ -133,18 +133,18 @@ func TestMultipleStopsSamePrice(t *testing.T) {
 
 	s1 := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStop,
 		0, models.FloatToPrice(51000), models.FloatToQty(1.0), "s1")
-	ob.AddOrder(s1)
+	ob.AddOrder(s1, 0)
 	s2 := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStop,
 		0, models.FloatToPrice(51000), models.FloatToQty(2.0), "s2")
-	ob.AddOrder(s2)
+	ob.AddOrder(s2, 0)
 
 	// Create a trade at 51000
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "seller")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "buyer")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 
 	triggered := ob.CheckStops()
 	if len(triggered) != 2 {
@@ -157,7 +157,7 @@ func TestCancelPendingStop(t *testing.T) {
 
 	stop := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStop,
 		0, models.FloatToPrice(51000), models.FloatToQty(1.0), "stop")
-	ob.AddOrder(stop)
+	ob.AddOrder(stop, 0)
 
 	cancelled, ok := ob.CancelOrder(stop.ID)
 	if !ok {
@@ -179,11 +179,11 @@ func TestStopIncludedInAllOrders(t *testing.T) {
 
 	limit := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "lim")
-	ob.AddOrder(limit)
+	ob.AddOrder(limit, 0)
 
 	stop := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStop,
 		0, models.FloatToPrice(51000), models.FloatToQty(1.0), "stop")
-	ob.AddOrder(stop)
+	ob.AddOrder(stop, 0)
 
 	all := ob.AllOrders()
 	if len(all) != 2 {
@@ -218,15 +218,15 @@ func TestStopLimitActivatesAsLimit(t *testing.T) {
 	// Stop-limit: trigger at 51000, limit price 51500
 	stop := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStopLimit,
 		models.FloatToPrice(51500), models.FloatToPrice(51000), models.FloatToQty(1.0), "sl")
-	ob.AddOrder(stop)
+	ob.AddOrder(stop, 0)
 
 	// Trade at 51000 to trigger
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "s")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(51000), 0, models.FloatToQty(1.0), "b")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 
 	triggered := ob.CheckStops()
 	if len(triggered) != 1 {

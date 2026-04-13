@@ -18,10 +18,10 @@ import (
 // PriceLevel holds all orders at a single price point.
 // Orders are maintained in FIFO order for time priority within the same price.
 type PriceLevel struct {
-	Price     int64
-	TotalQty  uint64
-	Orders    *list.List // *models.Order
-	orderMap  map[uint64]*list.Element
+	Price    int64
+	TotalQty uint64
+	Orders   *list.List // *models.Order
+	orderMap map[uint64]*list.Element
 }
 
 func newPriceLevel(price int64) *PriceLevel {
@@ -166,17 +166,17 @@ func (t *priceTree) ForEachDescending(fn func(*PriceLevel) bool) {
 
 // MatchResult carries information about a single fill execution.
 type MatchResult struct {
-	Trade      *models.Trade
-	BuyOrder   *models.Order
-	SellOrder  *models.Order
+	Trade     *models.Trade
+	BuyOrder  *models.Order
+	SellOrder *models.Order
 }
 
 // OrderBook is a thread-safe, price-time priority order book for one instrument.
 type OrderBook struct {
 	mu         sync.RWMutex
 	instrument string
-	bids       *priceTree // buy orders, best = highest
-	asks       *priceTree // sell orders, best = lowest
+	bids       *priceTree               // buy orders, best = highest
+	asks       *priceTree               // sell orders, best = lowest
 	orders     map[uint64]*models.Order // fast order lookup by ID
 	sequence   uint64                   // monotonic sequence for snapshots
 	lastPrice  int64
@@ -218,7 +218,7 @@ func (ob *OrderBook) SetSTP(enabled bool, defaultMode models.STPMode) {
 type stpAction int
 
 const (
-	stpNone           stpAction = iota
+	stpNone stpAction = iota
 	stpCancelResting
 	stpCancelIncoming
 	stpCancelBoth
@@ -268,25 +268,26 @@ func (ob *OrderBook) cancelRestingOrder(order *models.Order, level *PriceLevel) 
 // ── Public methods (all acquire the lock) ────────────────────────────────────
 
 // AddOrder inserts a new limit/stop order into the book.
+// walSeq is the WAL record sequence for this order submission (0 in tests or when WAL is disabled).
 // Returns the list of matched trades (may be empty if no crossing).
-func (ob *OrderBook) AddOrder(order *models.Order) ([]*MatchResult, error) {
+func (ob *OrderBook) AddOrder(order *models.Order, walSeq uint64) ([]*MatchResult, error) {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
 
 	switch order.Type {
 	case models.OrderTypeMarket:
-		return ob.matchMarket(order)
+		return ob.matchMarket(order, walSeq)
 	case models.OrderTypeLimit:
-		return ob.matchLimit(order)
+		return ob.matchLimit(order, walSeq)
 	case models.OrderTypeIOC:
-		results, _ := ob.matchLimit(order)
+		results, _ := ob.matchLimit(order, walSeq)
 		// Cancel any remaining quantity (but don't overwrite STP status)
 		if !order.IsFilled() && order.Status != models.StatusSTPCancelled {
 			order.Status = models.StatusCancelled
 		}
 		return results, nil
 	case models.OrderTypeFOK:
-		return ob.matchFOK(order)
+		return ob.matchFOK(order, walSeq)
 	case models.OrderTypeStop, models.OrderTypeStopLimit:
 		order.Status = models.StatusPendingTrigger
 		ob.stopBook.Add(order)
@@ -333,7 +334,7 @@ func (ob *OrderBook) CheckStops() []*models.Order {
 // AmendOrder modifies the price and/or quantity of a resting LIMIT order.
 // newPrice=0 means keep current price. newQty=0 means keep current quantity.
 // Returns the amended order, any trades (if cancel+re-insert caused matching), and an error.
-func (ob *OrderBook) AmendOrder(orderID uint64, newPrice int64, newQty uint64) (*models.Order, []*MatchResult, error) {
+func (ob *OrderBook) AmendOrder(orderID uint64, newPrice int64, newQty uint64, walSeq uint64) (*models.Order, []*MatchResult, error) {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
 
@@ -405,7 +406,7 @@ func (ob *OrderBook) AmendOrder(orderID uint64, newPrice int64, newQty uint64) (
 	}
 
 	// Re-enter matching (may produce trades)
-	results, _ := ob.matchLimit(order)
+	results, _ := ob.matchLimit(order, walSeq)
 	return order, results, nil
 }
 
@@ -505,7 +506,7 @@ func (ob *OrderBook) LastPrice() int64 {
 // All crossing orders are filled at the single equilibrium price.
 // Market orders are filled first, then limit orders by price-time priority.
 // Returns the list of trades.
-func (ob *OrderBook) Uncross(eqPrice int64) []*MatchResult {
+func (ob *OrderBook) Uncross(eqPrice int64, walSeq uint64) []*MatchResult {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
 
@@ -567,7 +568,7 @@ func (ob *OrderBook) Uncross(eqPrice int64) []*MatchResult {
 		ob.updateAvgPrice(buy, eqPrice, fillQty)
 		ob.updateAvgPrice(sell, eqPrice, fillQty)
 
-		trade := models.NewTrade(ob.instrument, buy, sell, eqPrice, fillQty, models.SideBuy)
+		trade := models.NewTrade(ob.instrument, buy, sell, eqPrice, fillQty, models.SideBuy, walSeq)
 		results = append(results, &MatchResult{Trade: trade, BuyOrder: buy, SellOrder: sell})
 
 		if buy.IsFilled() {
@@ -705,7 +706,7 @@ func (ob *OrderBook) RestoreOrder(order *models.Order) {
 
 // ── Internal matching logic ───────────────────────────────────────────────────
 
-func (ob *OrderBook) matchLimit(order *models.Order) ([]*MatchResult, error) {
+func (ob *OrderBook) matchLimit(order *models.Order, walSeq uint64) ([]*MatchResult, error) {
 	var results []*MatchResult
 
 	for order.RemainingQty() > 0 {
@@ -741,7 +742,7 @@ func (ob *OrderBook) matchLimit(order *models.Order) ([]*MatchResult, error) {
 			return results, nil
 		}
 
-		result := ob.fillAgainst(order, contra)
+		result := ob.fillAgainst(order, contra, walSeq)
 		if result != nil {
 			results = append(results, result)
 		}
@@ -758,7 +759,7 @@ func (ob *OrderBook) matchLimit(order *models.Order) ([]*MatchResult, error) {
 	return results, nil
 }
 
-func (ob *OrderBook) matchMarket(order *models.Order) ([]*MatchResult, error) {
+func (ob *OrderBook) matchMarket(order *models.Order, walSeq uint64) ([]*MatchResult, error) {
 	var results []*MatchResult
 
 	for order.RemainingQty() > 0 {
@@ -791,7 +792,7 @@ func (ob *OrderBook) matchMarket(order *models.Order) ([]*MatchResult, error) {
 			return results, nil
 		}
 
-		result := ob.fillAgainst(order, contra)
+		result := ob.fillAgainst(order, contra, walSeq)
 		if result != nil {
 			results = append(results, result)
 		}
@@ -810,7 +811,7 @@ func (ob *OrderBook) matchMarket(order *models.Order) ([]*MatchResult, error) {
 	return results, nil
 }
 
-func (ob *OrderBook) matchFOK(order *models.Order) ([]*MatchResult, error) {
+func (ob *OrderBook) matchFOK(order *models.Order, walSeq uint64) ([]*MatchResult, error) {
 	// First, check if full fill is possible (scan the book, no mutations)
 	available := ob.availableLiquidity(order)
 	if available < order.Quantity {
@@ -818,7 +819,7 @@ func (ob *OrderBook) matchFOK(order *models.Order) ([]*MatchResult, error) {
 		return nil, nil
 	}
 	// Full fill confirmed — now match
-	results, err := ob.matchLimit(order)
+	results, err := ob.matchLimit(order, walSeq)
 	return results, err
 }
 
@@ -846,7 +847,7 @@ func (ob *OrderBook) availableLiquidity(order *models.Order) uint64 {
 }
 
 // fillAgainst executes a fill between the incoming order and the best contra level.
-func (ob *OrderBook) fillAgainst(aggressor *models.Order, level *PriceLevel) *MatchResult {
+func (ob *OrderBook) fillAgainst(aggressor *models.Order, level *PriceLevel, walSeq uint64) *MatchResult {
 	resting := level.Peek()
 	if resting == nil {
 		return nil
@@ -877,7 +878,7 @@ func (ob *OrderBook) fillAgainst(aggressor *models.Order, level *PriceLevel) *Ma
 	}
 
 	// Build trade
-	trade := models.NewTrade(ob.instrument, buyOrder, sellOrder, fillPrice, fillQty, aggressor.Side)
+	trade := models.NewTrade(ob.instrument, buyOrder, sellOrder, fillPrice, fillQty, aggressor.Side, walSeq)
 	ob.lastPrice = fillPrice
 	ob.lastTrade = trade
 	ob.nextSeq()

@@ -16,7 +16,7 @@ func TestLimitOrderMatch(t *testing.T) {
 	// Add a resting sell at 50000
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "seller-1")
-	results, err := ob.AddOrder(sell)
+	results, err := ob.AddOrder(sell, 0)
 	if err != nil {
 		t.Fatalf("AddOrder sell: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestLimitOrderMatch(t *testing.T) {
 	// Add a crossing buy
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(0.5), "buyer-1")
-	results, err = ob.AddOrder(buy)
+	results, err = ob.AddOrder(buy, 0)
 	if err != nil {
 		t.Fatalf("AddOrder buy: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestMarketOrderNoLiquidity(t *testing.T) {
 	ob := orderbook.NewOrderBook("ETH-USD")
 	market := models.NewOrder("ETH-USD", models.SideBuy, models.OrderTypeMarket,
 		0, 0, models.FloatToQty(1.0), "buyer-mkt")
-	_, err := ob.AddOrder(market)
+	_, err := ob.AddOrder(market, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,13 +73,13 @@ func TestFOKFullFill(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		sell := models.NewOrder("SOL-USD", models.SideSell, models.OrderTypeLimit,
 			models.FloatToPrice(100), 0, models.FloatToQty(0.5), fmt.Sprintf("s%d", i))
-		_, _ = ob.AddOrder(sell)
+		_, _ = ob.AddOrder(sell, 0)
 	}
 
 	// FOK for 1.5 BTC — should fill (2 BTC available)
 	fok := models.NewOrder("SOL-USD", models.SideBuy, models.OrderTypeFOK,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.5), "fok-buyer")
-	results, err := ob.AddOrder(fok)
+	results, err := ob.AddOrder(fok, 0)
 	if err != nil {
 		t.Fatalf("FOK error: %v", err)
 	}
@@ -92,11 +92,11 @@ func TestFOKCancelledInsufficientLiquidity(t *testing.T) {
 	ob := orderbook.NewOrderBook("BNB-USD")
 	sell := models.NewOrder("BNB-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(300), 0, models.FloatToQty(0.1), "small-sell")
-	_, _ = ob.AddOrder(sell)
+	_, _ = ob.AddOrder(sell, 0)
 
 	fok := models.NewOrder("BNB-USD", models.SideBuy, models.OrderTypeFOK,
 		models.FloatToPrice(300), 0, models.FloatToQty(1.0), "fok-too-big")
-	results, _ := ob.AddOrder(fok)
+	results, _ := ob.AddOrder(fok, 0)
 	if fok.Status != models.StatusCancelled {
 		t.Errorf("FOK should be CANCELLED, got %s", fok.Status)
 	}
@@ -109,7 +109,7 @@ func TestCancelOrder(t *testing.T) {
 	ob := orderbook.NewOrderBook("BTC-USD")
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(60000), 0, models.FloatToQty(2.0), "cancel-test")
-	_, _ = ob.AddOrder(sell)
+	_, _ = ob.AddOrder(sell, 0)
 
 	cancelled, ok := ob.CancelOrder(sell.ID)
 	if !ok {
@@ -132,11 +132,11 @@ func TestIOCPartialFill(t *testing.T) {
 
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(0.3), "s1")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	ioc := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeIOC,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "ioc-buyer")
-	results, _ := ob.AddOrder(ioc)
+	results, _ := ob.AddOrder(ioc, 0)
 
 	if len(results) != 1 {
 		t.Errorf("expected 1 trade, got %d", len(results))
@@ -155,11 +155,11 @@ func TestIOCFullFill(t *testing.T) {
 
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "s1")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	ioc := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeIOC,
 		models.FloatToPrice(50000), 0, models.FloatToQty(0.5), "ioc-buyer")
-	results, _ := ob.AddOrder(ioc)
+	results, _ := ob.AddOrder(ioc, 0)
 
 	if len(results) != 1 {
 		t.Errorf("expected 1 trade, got %d", len(results))
@@ -175,12 +175,12 @@ func TestMarketSellOrder(t *testing.T) {
 	// Add resting buy
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(49000), 0, models.FloatToQty(2.0), "buyer")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 
 	// Market sell
 	mkt := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeMarket,
 		0, 0, models.FloatToQty(1.0), "seller")
-	results, err := ob.AddOrder(mkt)
+	results, err := ob.AddOrder(mkt, 0)
 	if err != nil {
 		t.Fatalf("market sell error: %v", err)
 	}
@@ -197,11 +197,11 @@ func TestMarketPartialFill(t *testing.T) {
 
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(49000), 0, models.FloatToQty(0.5), "buyer")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 
 	mkt := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeMarket,
 		0, 0, models.FloatToQty(1.0), "seller")
-	ob.AddOrder(mkt)
+	ob.AddOrder(mkt, 0)
 
 	if mkt.Status != models.StatusPartiallyFilled {
 		t.Errorf("expected PARTIALLY_FILLED, got %s", mkt.Status)
@@ -214,12 +214,12 @@ func TestLimitSellNoCrossing(t *testing.T) {
 	// Buy at 49000
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "buyer")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 
 	// Sell at 50000 -- no crossing
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "seller")
-	results, _ := ob.AddOrder(sell)
+	results, _ := ob.AddOrder(sell, 0)
 	if len(results) != 0 {
 		t.Errorf("expected 0 trades, got %d", len(results))
 	}
@@ -233,11 +233,11 @@ func TestLimitPartialFillAndRest(t *testing.T) {
 
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(0.5), "s1")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "b1")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	if len(results) != 1 {
 		t.Errorf("expected 1 trade, got %d", len(results))
@@ -259,13 +259,13 @@ func TestFOKSellSide(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		bid := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 			models.FloatToPrice(48000), 0, models.FloatToQty(1.0), fmt.Sprintf("b%d", i))
-		ob.AddOrder(bid)
+		ob.AddOrder(bid, 0)
 	}
 
 	// FOK sell for 2.0 -- should fill
 	fok := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeFOK,
 		models.FloatToPrice(48000), 0, models.FloatToQty(2.0), "fok-seller")
-	results, _ := ob.AddOrder(fok)
+	results, _ := ob.AddOrder(fok, 0)
 	if fok.Status != models.StatusFilled {
 		t.Errorf("FOK sell status = %s, want FILLED", fok.Status)
 	}
@@ -278,7 +278,7 @@ func TestUnsupportedOrderType(t *testing.T) {
 	ob := orderbook.NewOrderBook("BTC-USD")
 	order := models.NewOrder("BTC-USD", models.SideBuy, models.OrderType("INVALID_TYPE"),
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "bad")
-	_, err := ob.AddOrder(order)
+	_, err := ob.AddOrder(order, 0)
 	if err == nil {
 		t.Error("expected error for unsupported order type")
 	}
@@ -290,12 +290,12 @@ func TestSnapshot(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 			models.FloatToPrice(50000+float64(i)*100), 0, models.FloatToQty(1.0), fmt.Sprintf("s%d", i))
-		ob.AddOrder(sell)
+		ob.AddOrder(sell, 0)
 	}
 	for i := 0; i < 2; i++ {
 		buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 			models.FloatToPrice(49000-float64(i)*100), 0, models.FloatToQty(1.0), fmt.Sprintf("b%d", i))
-		ob.AddOrder(buy)
+		ob.AddOrder(buy, 0)
 	}
 
 	snap := ob.Snapshot(10)
@@ -316,7 +316,7 @@ func TestSnapshotDepthLimit(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 			models.FloatToPrice(50000+float64(i)*100), 0, models.FloatToQty(1.0), fmt.Sprintf("s%d", i))
-		ob.AddOrder(sell)
+		ob.AddOrder(sell, 0)
 	}
 
 	snap := ob.Snapshot(3)
@@ -330,10 +330,10 @@ func TestStats(t *testing.T) {
 
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "s1")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "b1")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 
 	bidLevels, askLevels, openOrders, bestBid, bestAsk, _ := ob.Stats()
 	if bidLevels != 1 {
@@ -369,10 +369,10 @@ func TestAllOrders(t *testing.T) {
 
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "s1")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "b1")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 
 	all := ob.AllOrders()
 	if len(all) != 2 {
@@ -415,13 +415,13 @@ func TestMultipleFillsAtSamePrice(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 			models.FloatToPrice(50000), 0, models.FloatToQty(1.0), fmt.Sprintf("s%d", i))
-		ob.AddOrder(sell)
+		ob.AddOrder(sell, 0)
 	}
 
 	// Big buy that sweeps all 3
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(3.0), "big-buyer")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	if len(results) != 3 {
 		t.Errorf("expected 3 trades, got %d", len(results))
@@ -437,14 +437,14 @@ func TestPriceTimePriority(t *testing.T) {
 	// Two sells at same price; first should fill first
 	sell1 := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "first")
-	ob.AddOrder(sell1)
+	ob.AddOrder(sell1, 0)
 	sell2 := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "second")
-	ob.AddOrder(sell2)
+	ob.AddOrder(sell2, 0)
 
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "buyer")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 trade, got %d", len(results))
@@ -474,7 +474,7 @@ func BenchmarkLimitOrderMatch(b *testing.B) {
 		price := models.FloatToPrice(50000 + float64(i%100)*0.01)
 		sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 			price, 0, models.FloatToQty(1.0), fmt.Sprintf("seed-%d", i))
-		_, _ = ob.AddOrder(sell)
+		_, _ = ob.AddOrder(sell, 0)
 	}
 
 	b.ResetTimer()
@@ -483,7 +483,7 @@ func BenchmarkLimitOrderMatch(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeMarket,
 			0, 0, models.FloatToQty(0.01), fmt.Sprintf("bench-%d", i))
-		_, _ = ob.AddOrder(buy)
+		_, _ = ob.AddOrder(buy, 0)
 	}
 }
 
@@ -495,6 +495,6 @@ func BenchmarkAddLimitOrder(b *testing.B) {
 		price := models.FloatToPrice(50000 - float64(i%500)*0.01)
 		order := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 			price, 0, models.FloatToQty(0.1), fmt.Sprintf("b-%d", i))
-		_, _ = ob.AddOrder(order)
+		_, _ = ob.AddOrder(order, 0)
 	}
 }

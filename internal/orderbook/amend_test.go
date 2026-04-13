@@ -12,13 +12,13 @@ func TestAmendQtyDecreasePreservesTimePriority(t *testing.T) {
 
 	o1 := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(2.0), "c1")
-	ob.AddOrder(o1)
+	ob.AddOrder(o1, 0)
 	o2 := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "c2")
-	ob.AddOrder(o2)
+	ob.AddOrder(o2, 0)
 
 	// Amend o1 qty down (should preserve time priority — o1 still ahead of o2)
-	amended, trades, err := ob.AmendOrder(o1.ID, 0, models.FloatToQty(1.0))
+	amended, trades, err := ob.AmendOrder(o1.ID, 0, models.FloatToQty(1.0), 0)
 	if err != nil {
 		t.Fatalf("AmendOrder: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestAmendQtyDecreasePreservesTimePriority(t *testing.T) {
 	// Sell should match o1 first (time priority preserved)
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "seller")
-	results, _ := ob.AddOrder(sell)
+	results, _ := ob.AddOrder(sell, 0)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 trade, got %d", len(results))
 	}
@@ -46,19 +46,19 @@ func TestAmendPriceChangeLosesTimePriority(t *testing.T) {
 
 	o1 := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "c1")
-	ob.AddOrder(o1)
+	ob.AddOrder(o1, 0)
 	o2 := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "c2")
-	ob.AddOrder(o2)
+	ob.AddOrder(o2, 0)
 
 	// Amend o1: change price away then back (cancel+re-insert loses priority)
 	// First move to 50001
-	_, _, err := ob.AmendOrder(o1.ID, models.FloatToPrice(50001), 0)
+	_, _, err := ob.AmendOrder(o1.ID, models.FloatToPrice(50001), 0, 0)
 	if err != nil {
 		t.Fatalf("AmendOrder to 50001: %v", err)
 	}
 	// Then move back to 50000
-	_, _, err = ob.AmendOrder(o1.ID, models.FloatToPrice(50000), 0)
+	_, _, err = ob.AmendOrder(o1.ID, models.FloatToPrice(50000), 0, 0)
 	if err != nil {
 		t.Fatalf("AmendOrder back to 50000: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestAmendPriceChangeLosesTimePriority(t *testing.T) {
 	// Sell should match o2 first (o1 lost time priority)
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "seller")
-	results, _ := ob.AddOrder(sell)
+	results, _ := ob.AddOrder(sell, 0)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 trade, got %d", len(results))
 	}
@@ -80,14 +80,14 @@ func TestAmendPriceChangeCausesMatch(t *testing.T) {
 
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "seller")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(49000), 0, models.FloatToQty(1.0), "buyer")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 
 	// Amend buy price up to cross the sell
-	_, trades, err := ob.AmendOrder(buy.ID, models.FloatToPrice(50000), 0)
+	_, trades, err := ob.AmendOrder(buy.ID, models.FloatToPrice(50000), 0, 0)
 	if err != nil {
 		t.Fatalf("AmendOrder: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestAmendPriceChangeCausesMatch(t *testing.T) {
 
 func TestAmendNotFound(t *testing.T) {
 	ob := orderbook.NewOrderBook("BTC-USD")
-	_, _, err := ob.AmendOrder(99999, models.FloatToPrice(50000), 0)
+	_, _, err := ob.AmendOrder(99999, models.FloatToPrice(50000), 0, 0)
 	if err == nil {
 		t.Error("expected error for nonexistent order")
 	}
@@ -109,13 +109,13 @@ func TestAmendFilledOrder(t *testing.T) {
 
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "s")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "b")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 	// sell is now filled
 
-	_, _, err := ob.AmendOrder(sell.ID, 0, models.FloatToQty(2.0))
+	_, _, err := ob.AmendOrder(sell.ID, 0, models.FloatToQty(2.0), 0)
 	if err == nil {
 		t.Error("expected error amending filled order")
 	}
@@ -126,9 +126,9 @@ func TestAmendStopOrder(t *testing.T) {
 
 	stop := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeStop,
 		0, models.FloatToPrice(51000), models.FloatToQty(1.0), "stop")
-	ob.AddOrder(stop)
+	ob.AddOrder(stop, 0)
 
-	_, _, err := ob.AmendOrder(stop.ID, models.FloatToPrice(52000), 0)
+	_, _, err := ob.AmendOrder(stop.ID, models.FloatToPrice(52000), 0, 0)
 	if err == nil {
 		t.Error("expected error amending stop order")
 	}
@@ -139,16 +139,16 @@ func TestAmendBelowFilledQty(t *testing.T) {
 
 	sell := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(2.0), "s")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	// Partially fill: buy 1.0
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "b")
-	ob.AddOrder(buy)
+	ob.AddOrder(buy, 0)
 	// sell is now partially filled with 1.0
 
 	// Try to amend qty to 0.5 (below filled 1.0)
-	_, _, err := ob.AmendOrder(sell.ID, 0, models.FloatToQty(0.5))
+	_, _, err := ob.AmendOrder(sell.ID, 0, models.FloatToQty(0.5), 0)
 	if err == nil {
 		t.Error("expected error reducing below filled qty")
 	}
@@ -159,9 +159,9 @@ func TestAmendNoOp(t *testing.T) {
 
 	order := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "c")
-	ob.AddOrder(order)
+	ob.AddOrder(order, 0)
 
-	amended, trades, err := ob.AmendOrder(order.ID, models.FloatToPrice(50000), models.FloatToQty(1.0))
+	amended, trades, err := ob.AmendOrder(order.ID, models.FloatToPrice(50000), models.FloatToQty(1.0), 0)
 	if err != nil {
 		t.Fatalf("no-op amend: %v", err)
 	}
@@ -178,13 +178,13 @@ func TestAmendQtyIncreaseLosesPriority(t *testing.T) {
 
 	o1 := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "c1")
-	ob.AddOrder(o1)
+	ob.AddOrder(o1, 0)
 	o2 := models.NewOrder("BTC-USD", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "c2")
-	ob.AddOrder(o2)
+	ob.AddOrder(o2, 0)
 
 	// Increase o1 qty — should lose time priority
-	_, _, err := ob.AmendOrder(o1.ID, 0, models.FloatToQty(2.0))
+	_, _, err := ob.AmendOrder(o1.ID, 0, models.FloatToQty(2.0), 0)
 	if err != nil {
 		t.Fatalf("AmendOrder: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestAmendQtyIncreaseLosesPriority(t *testing.T) {
 	// Buy should match o2 first
 	buy := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(50000), 0, models.FloatToQty(1.0), "buyer")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 trade, got %d", len(results))
 	}
@@ -205,9 +205,9 @@ func TestAmendMarketOrder(t *testing.T) {
 	ob := orderbook.NewOrderBook("BTC-USD")
 	mkt := models.NewOrder("BTC-USD", models.SideBuy, models.OrderTypeMarket,
 		0, 0, models.FloatToQty(1.0), "mkt")
-	ob.AddOrder(mkt) // market orders don't rest, so this won't find it
+	ob.AddOrder(mkt, 0) // market orders don't rest, so this won't find it
 
-	_, _, err := ob.AmendOrder(mkt.ID, models.FloatToPrice(50000), 0)
+	_, _, err := ob.AmendOrder(mkt.ID, models.FloatToPrice(50000), 0, 0)
 	if err == nil {
 		t.Error("expected error amending non-resting order")
 	}

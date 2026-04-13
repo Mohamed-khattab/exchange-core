@@ -135,6 +135,8 @@ func EncodeOrderCancel(buf []byte, seqNo uint64, orderID uint64, instrument stri
 	binary.LittleEndian.PutUint64(buf[off:], orderID)
 	off += 8
 	off += putString(buf[off:], instrument)
+	binary.LittleEndian.PutUint64(buf[off:], uint64(time.Now().UnixNano()))
+	off += 8
 
 	totalLen := off
 	binary.LittleEndian.PutUint32(buf[0:], uint32(totalLen))
@@ -148,13 +150,18 @@ func EncodeOrderCancel(buf []byte, seqNo uint64, orderID uint64, instrument stri
 }
 
 // DecodeOrderCancel decodes an order-cancel event from the payload.
-func DecodeOrderCancel(payload []byte) (orderID uint64, instrument string, err error) {
+// eventTSNano is wall-clock time at encode when present (trailing 8 bytes); otherwise 0 for legacy records.
+func DecodeOrderCancel(payload []byte) (orderID uint64, instrument string, eventTSNano int64, err error) {
 	if len(payload) < 10 {
-		return 0, "", fmt.Errorf("payload too short for order cancel")
+		return 0, "", 0, fmt.Errorf("payload too short for order cancel")
 	}
 	orderID = binary.LittleEndian.Uint64(payload[0:])
-	instrument, _ = getString(payload[8:])
-	return orderID, instrument, nil
+	instrument, n := getString(payload[8:])
+	off := 8 + n
+	if len(payload) >= off+8 {
+		eventTSNano = int64(binary.LittleEndian.Uint64(payload[off:]))
+	}
+	return orderID, instrument, eventTSNano, nil
 }
 
 // EncodeOrderAmend encodes an order amendment event.
@@ -167,6 +174,8 @@ func EncodeOrderAmend(buf []byte, seqNo uint64, orderID uint64, instrument strin
 	binary.LittleEndian.PutUint64(buf[off:], uint64(newPrice))
 	off += 8
 	binary.LittleEndian.PutUint64(buf[off:], newQty)
+	off += 8
+	binary.LittleEndian.PutUint64(buf[off:], uint64(time.Now().UnixNano()))
 	off += 8
 
 	totalLen := off
@@ -181,9 +190,10 @@ func EncodeOrderAmend(buf []byte, seqNo uint64, orderID uint64, instrument strin
 }
 
 // DecodeOrderAmend decodes an order amendment event from the payload.
-func DecodeOrderAmend(payload []byte) (orderID uint64, instrument string, newPrice int64, newQty uint64, err error) {
+// eventTSNano is wall-clock time at encode when present (trailing 8 bytes); otherwise 0 for legacy records.
+func DecodeOrderAmend(payload []byte) (orderID uint64, instrument string, newPrice int64, newQty uint64, eventTSNano int64, err error) {
 	if len(payload) < 26 {
-		return 0, "", 0, 0, fmt.Errorf("payload too short for order amend")
+		return 0, "", 0, 0, 0, fmt.Errorf("payload too short for order amend")
 	}
 	orderID = binary.LittleEndian.Uint64(payload[0:])
 	instrument, n := getString(payload[8:])
@@ -191,7 +201,11 @@ func DecodeOrderAmend(payload []byte) (orderID uint64, instrument string, newPri
 	newPrice = int64(binary.LittleEndian.Uint64(payload[off:]))
 	off += 8
 	newQty = binary.LittleEndian.Uint64(payload[off:])
-	return orderID, instrument, newPrice, newQty, nil
+	off += 8
+	if len(payload) >= off+8 {
+		eventTSNano = int64(binary.LittleEndian.Uint64(payload[off:]))
+	}
+	return orderID, instrument, newPrice, newQty, eventTSNano, nil
 }
 
 // EncodeMassCancel encodes a mass cancel event.
@@ -209,6 +223,8 @@ func EncodeMassCancel(buf []byte, seqNo uint64, instrument, clientID string, sid
 		buf[off] = 0 // no side filter
 		off++
 	}
+	binary.LittleEndian.PutUint64(buf[off:], uint64(time.Now().UnixNano()))
+	off += 8
 
 	totalLen := off
 	binary.LittleEndian.PutUint32(buf[0:], uint32(totalLen))
@@ -222,9 +238,10 @@ func EncodeMassCancel(buf []byte, seqNo uint64, instrument, clientID string, sid
 }
 
 // DecodeMassCancel decodes a mass cancel event from the payload.
-func DecodeMassCancel(payload []byte) (instrument, clientID string, side *int8, err error) {
+// eventTSNano is wall-clock time at encode when present (trailing 8 bytes); otherwise 0 for legacy records.
+func DecodeMassCancel(payload []byte) (instrument, clientID string, side *int8, eventTSNano int64, err error) {
 	if len(payload) < 5 {
-		return "", "", nil, fmt.Errorf("payload too short for mass cancel")
+		return "", "", nil, 0, fmt.Errorf("payload too short for mass cancel")
 	}
 	off := 0
 	instrument, n := getString(payload[off:])
@@ -236,8 +253,12 @@ func DecodeMassCancel(payload []byte) (instrument, clientID string, side *int8, 
 	if hasSide == 1 {
 		s := int8(payload[off])
 		side = &s
+		off++
 	}
-	return instrument, clientID, side, nil
+	if len(payload) >= off+8 {
+		eventTSNano = int64(binary.LittleEndian.Uint64(payload[off:]))
+	}
+	return instrument, clientID, side, eventTSNano, nil
 }
 
 // EncodeOrderRejected encodes an order rejection audit event.
@@ -266,9 +287,9 @@ func EncodeOrderRejected(buf []byte, seqNo uint64, orderID uint64, clientID, ins
 }
 
 // DecodeOrderRejected decodes an order rejection event.
-func DecodeOrderRejected(payload []byte) (orderID uint64, clientID, instrument string, reasonCode uint16, reasonText string, err error) {
+func DecodeOrderRejected(payload []byte) (orderID uint64, clientID, instrument string, reasonCode uint16, reasonText string, eventTSNano int64, err error) {
 	if len(payload) < 12 {
-		return 0, "", "", 0, "", fmt.Errorf("payload too short for order rejected")
+		return 0, "", "", 0, "", 0, fmt.Errorf("payload too short for order rejected")
 	}
 	off := 0
 	orderID = binary.LittleEndian.Uint64(payload[off:])
@@ -279,8 +300,12 @@ func DecodeOrderRejected(payload []byte) (orderID uint64, clientID, instrument s
 	off += n
 	reasonCode = binary.LittleEndian.Uint16(payload[off:])
 	off += 2
-	reasonText, _ = getString(payload[off:])
-	return orderID, clientID, instrument, reasonCode, reasonText, nil
+	reasonText, n = getString(payload[off:])
+	off += n
+	if len(payload) >= off+8 {
+		eventTSNano = int64(binary.LittleEndian.Uint64(payload[off:]))
+	}
+	return orderID, clientID, instrument, reasonCode, reasonText, eventTSNano, nil
 }
 
 // EncodeTradeExecuted encodes a trade execution audit event.

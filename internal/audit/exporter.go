@@ -65,7 +65,7 @@ func decodeToAuditRecord(seqNo uint64, eventType uint8, payload []byte) (*AuditR
 	record := &AuditRecord{
 		SeqNo:     seqNo,
 		EventType: eventTypeNames[eventType],
-		Timestamp: time.Now().Format(time.RFC3339Nano), // fallback
+		Timestamp: "",
 	}
 
 	switch eventType {
@@ -86,27 +86,33 @@ func decodeToAuditRecord(seqNo uint64, eventType uint8, payload []byte) (*AuditR
 		}
 
 	case wal.EventOrderCancel:
-		orderID, instrument, err := wal.DecodeOrderCancel(payload)
+		orderID, instrument, tsNano, err := wal.DecodeOrderCancel(payload)
 		if err != nil {
 			return nil, err
 		}
 		record.OrderID = orderID
 		record.Instrument = instrument
+		if tsNano != 0 {
+			record.Timestamp = time.Unix(0, tsNano).UTC().Format(time.RFC3339Nano)
+		}
 
 	case wal.EventOrderAmend:
-		orderID, instrument, newPrice, newQty, err := wal.DecodeOrderAmend(payload)
+		orderID, instrument, newPrice, newQty, tsNano, err := wal.DecodeOrderAmend(payload)
 		if err != nil {
 			return nil, err
 		}
 		record.OrderID = orderID
 		record.Instrument = instrument
+		if tsNano != 0 {
+			record.Timestamp = time.Unix(0, tsNano).UTC().Format(time.RFC3339Nano)
+		}
 		record.Details = map[string]interface{}{
 			"new_price":    models.PriceToFloat(newPrice),
 			"new_quantity": models.QtyToFloat(newQty),
 		}
 
 	case wal.EventOrderRejected:
-		orderID, clientID, instrument, reasonCode, reasonText, err := wal.DecodeOrderRejected(payload)
+		orderID, clientID, instrument, reasonCode, reasonText, tsNano, err := wal.DecodeOrderRejected(payload)
 		if err != nil {
 			return nil, err
 		}
@@ -115,6 +121,9 @@ func decodeToAuditRecord(seqNo uint64, eventType uint8, payload []byte) (*AuditR
 		record.Instrument = instrument
 		record.ReasonCode = reasonCode
 		record.ReasonText = reasonText
+		if tsNano != 0 {
+			record.Timestamp = time.Unix(0, tsNano).UTC().Format(time.RFC3339Nano)
+		}
 
 	case wal.EventTradeExecuted:
 		tradeID, instrument, buyOrderID, sellOrderID, buyClientID, sellClientID, price, qty, _, tsNano, err := wal.DecodeTradeExecuted(payload)
@@ -134,12 +143,15 @@ func decodeToAuditRecord(seqNo uint64, eventType uint8, payload []byte) (*AuditR
 		}
 
 	case wal.EventMassCancel:
-		instrument, clientID, _, err := wal.DecodeMassCancel(payload)
+		instrument, clientID, _, tsNano, err := wal.DecodeMassCancel(payload)
 		if err != nil {
 			return nil, err
 		}
 		record.Instrument = instrument
 		record.ClientID = clientID
+		if tsNano != 0 {
+			record.Timestamp = time.Unix(0, tsNano).UTC().Format(time.RFC3339Nano)
+		}
 
 	default:
 		record.EventType = fmt.Sprintf("UNKNOWN_%d", eventType)

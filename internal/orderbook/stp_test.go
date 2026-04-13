@@ -19,11 +19,11 @@ func TestSTPDisabledSelfTradeProceeds(t *testing.T) {
 
 	sell := models.NewOrder("STP-OFF", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "same-client")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	buy := models.NewOrder("STP-OFF", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "same-client")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	if len(results) != 1 {
 		t.Errorf("expected 1 trade (STP disabled), got %d", len(results))
@@ -38,11 +38,11 @@ func TestSTPCancelResting(t *testing.T) {
 
 	sell := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	buy := models.NewOrder("STP-TEST", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	// No trade should occur; resting cancelled, incoming rests
 	if len(results) != 0 {
@@ -63,11 +63,11 @@ func TestSTPCancelIncoming(t *testing.T) {
 
 	sell := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	buy := models.NewOrder("STP-TEST", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	if len(results) != 0 {
 		t.Errorf("expected 0 trades, got %d", len(results))
@@ -87,11 +87,11 @@ func TestSTPCancelBoth(t *testing.T) {
 
 	sell := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	buy := models.NewOrder("STP-TEST", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	if len(results) != 0 {
 		t.Errorf("expected 0 trades, got %d", len(results))
@@ -109,11 +109,11 @@ func TestSTPDifferentClientsNoAction(t *testing.T) {
 
 	sell := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	buy := models.NewOrder("STP-TEST", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-B")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	if len(results) != 1 {
 		t.Errorf("expected 1 trade (different clients), got %d", len(results))
@@ -126,16 +126,16 @@ func TestSTPCancelRestingSweepsNextLevel(t *testing.T) {
 	// Resting: same-client sell at 100, different-client sell at 100
 	sell1 := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	ob.AddOrder(sell1)
+	ob.AddOrder(sell1, 0)
 
 	sell2 := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-B")
-	ob.AddOrder(sell2)
+	ob.AddOrder(sell2, 0)
 
 	// Buy from client-A: should skip sell1 (STP cancel resting), match sell2
 	buy := models.NewOrder("STP-TEST", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	if sell1.Status != models.StatusSTPCancelled {
 		t.Errorf("sell1 status = %s, want STP_CANCELLED", sell1.Status)
@@ -153,11 +153,11 @@ func TestSTPWithMarketOrder(t *testing.T) {
 
 	sell := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	mkt := models.NewOrder("STP-TEST", models.SideBuy, models.OrderTypeMarket,
 		0, 0, models.FloatToQty(1.0), "client-A")
-	results, _ := ob.AddOrder(mkt)
+	results, _ := ob.AddOrder(mkt, 0)
 
 	if len(results) != 0 {
 		t.Errorf("expected 0 trades, got %d", len(results))
@@ -172,11 +172,11 @@ func TestSTPWithIOCOrder(t *testing.T) {
 
 	sell := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	ioc := models.NewOrder("STP-TEST", models.SideBuy, models.OrderTypeIOC,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	results, _ := ob.AddOrder(ioc)
+	results, _ := ob.AddOrder(ioc, 0)
 
 	if len(results) != 0 {
 		t.Errorf("expected 0 trades, got %d", len(results))
@@ -192,12 +192,12 @@ func TestSTPPerOrderOverride(t *testing.T) {
 
 	sell := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	buy := models.NewOrder("STP-TEST", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
 	buy.STPMode = models.STPCancelResting // override
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	// With CANCEL_RESTING override: sell should be cancelled, buy rests
 	if sell.Status != models.StatusSTPCancelled {
@@ -218,11 +218,11 @@ func TestSTPEmptyClientIDNoAction(t *testing.T) {
 	// Orders with empty ClientID should never trigger STP
 	sell := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "")
-	ob.AddOrder(sell)
+	ob.AddOrder(sell, 0)
 
 	buy := models.NewOrder("STP-TEST", models.SideBuy, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "")
-	results, _ := ob.AddOrder(buy)
+	results, _ := ob.AddOrder(buy, 0)
 
 	if len(results) != 1 {
 		t.Errorf("expected 1 trade (empty ClientID), got %d", len(results))
@@ -235,16 +235,16 @@ func TestSTPCancelRestingMarketSweeps(t *testing.T) {
 	// Two sells: same client at 100, different client at 101
 	sell1 := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(100), 0, models.FloatToQty(1.0), "client-A")
-	ob.AddOrder(sell1)
+	ob.AddOrder(sell1, 0)
 
 	sell2 := models.NewOrder("STP-TEST", models.SideSell, models.OrderTypeLimit,
 		models.FloatToPrice(101), 0, models.FloatToQty(1.0), "client-B")
-	ob.AddOrder(sell2)
+	ob.AddOrder(sell2, 0)
 
 	// Market buy from client-A: should STP-cancel sell1 at 100, match sell2 at 101
 	mkt := models.NewOrder("STP-TEST", models.SideBuy, models.OrderTypeMarket,
 		0, 0, models.FloatToQty(1.0), "client-A")
-	results, _ := ob.AddOrder(mkt)
+	results, _ := ob.AddOrder(mkt, 0)
 
 	if sell1.Status != models.StatusSTPCancelled {
 		t.Errorf("sell1 status = %s, want STP_CANCELLED", sell1.Status)
