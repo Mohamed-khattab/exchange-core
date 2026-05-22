@@ -369,7 +369,11 @@ func (w *instrumentWorker) handleCommand(cmd *command) {
 					if w.walWriter != nil {
 						actWalSeq = w.walWriter.NextSeqNo()
 						n := wal.EncodeStopActivation(w.walBuf[:], actWalSeq, stopOrder)
-						w.walWriter.Append(w.walBuf[:n])
+						if err := w.walWriter.Append(w.walBuf[:n]); err != nil {
+							log.Printf("[engine] WAL write error on stop activation for %s order=%d: %v", w.instrument, stopOrder.ID, err)
+							stopOrder.Status = models.StatusRejected
+							continue
+						}
 						w.eventCount++
 					}
 

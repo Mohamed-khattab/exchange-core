@@ -52,9 +52,10 @@ func (pl *PriceLevel) Remove(o *models.Order) bool {
 func (pl *PriceLevel) UpdateQty(orderID uint64, delta int64) {
 	if delta < 0 {
 		d := uint64(-delta)
-		if pl.TotalQty >= d {
-			pl.TotalQty -= d
+		if pl.TotalQty < d {
+			panic(fmt.Sprintf("orderbook: PriceLevel.UpdateQty underflow (order=%d total=%d delta=%d)", orderID, pl.TotalQty, delta))
 		}
+		pl.TotalQty -= d
 	} else {
 		pl.TotalQty += uint64(delta)
 	}

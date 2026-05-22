@@ -2,8 +2,41 @@ package orderbook
 
 import (
 	"math/rand"
+	"strings"
 	"testing"
 )
+
+func TestPriceLevelUpdateQtyUnderflowPanics(t *testing.T) {
+	pl := newPriceLevel(50000)
+	pl.TotalQty = 100
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on underflow, got none")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "underflow") {
+			t.Errorf("panic value = %v, want substring 'underflow'", r)
+		}
+	}()
+
+	pl.UpdateQty(1, -200) // delta magnitude > TotalQty
+}
+
+func TestPriceLevelUpdateQtyHappyPath(t *testing.T) {
+	pl := newPriceLevel(50000)
+	pl.TotalQty = 100
+
+	pl.UpdateQty(1, -40)
+	if pl.TotalQty != 60 {
+		t.Errorf("TotalQty = %d, want 60", pl.TotalQty)
+	}
+	pl.UpdateQty(1, 25)
+	if pl.TotalQty != 85 {
+		t.Errorf("TotalQty = %d, want 85", pl.TotalQty)
+	}
+}
 
 func TestRBTreeInsertAndFind(t *testing.T) {
 	tree := newRBTree()
