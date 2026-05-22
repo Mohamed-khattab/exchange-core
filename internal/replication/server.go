@@ -2,19 +2,22 @@ package replication
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 // Server streams WAL events to connected replicas.
 type Server struct {
-	listener net.Listener
-	replicas map[*replicaConn]struct{}
-	mu       sync.RWMutex
-	eventCh  <-chan ReplicationEvent
-	ctx      context.Context
-	cancel   context.CancelFunc
+	listener   net.Listener
+	replicas   map[*replicaConn]struct{}
+	mu         sync.RWMutex
+	eventCh    <-chan ReplicationEvent
+	ctx        context.Context
+	cancel     context.CancelFunc
+	authSecret []byte
 }
 
 type replicaConn struct {
@@ -23,19 +26,28 @@ type replicaConn struct {
 }
 
 // NewServer creates a replication server that reads events from the channel
-// and fans them out to connected replicas.
-func NewServer(addr string, eventCh <-chan ReplicationEvent) (*Server, error) {
+// and fans them out to connected replicas. authSecret is required and must be
+// at least 16 bytes; the server uses it to authenticate each replica via an
+// HMAC-SHA256 challenge-response.
+func NewServer(addr string, eventCh <-chan ReplicationEvent, authSecret []byte) (*Server, error) {
+	if len(authSecret) < 16 {
+		return nil, fmt.Errorf("replication: authSecret must be at least 16 bytes")
+	}
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	// Copy the secret so callers can zero their input slice.
+	secret := make([]byte, len(authSecret))
+	copy(secret, authSecret)
 	s := &Server{
-		listener: listener,
-		replicas: make(map[*replicaConn]struct{}),
-		eventCh:  eventCh,
-		ctx:      ctx,
-		cancel:   cancel,
+		listener:   listener,
+		replicas:   make(map[*replicaConn]struct{}),
+		eventCh:    eventCh,
+		ctx:        ctx,
+		cancel:     cancel,
+		authSecret: secret,
 	}
 	return s, nil
 }
@@ -84,14 +96,44 @@ func (s *Server) acceptLoop() {
 }
 
 func (s *Server) handleReplica(conn net.Conn) {
-	// Read handshake
+	// Bound handshake time so a slow/malicious peer can't pin a goroutine.
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+
 	instruments, err := ReadHandshake(conn)
 	if err != nil {
-		log.Printf("[replication] handshake error: %v", err)
+		log.Printf("[replication] handshake error from %s: %v", conn.RemoteAddr(), err)
 		conn.Close()
 		return
 	}
-	log.Printf("[replication] replica connected for instruments: %v", instruments)
+
+	// Challenge-response: send a fresh nonce, expect HMAC-SHA256(secret, nonce||instruments).
+	nonce, err := newNonce()
+	if err != nil {
+		log.Printf("[replication] nonce error: %v", err)
+		conn.Close()
+		return
+	}
+	if err := WriteChallenge(conn, nonce[:]); err != nil {
+		log.Printf("[replication] challenge write error: %v", err)
+		conn.Close()
+		return
+	}
+	tag, err := ReadAuthResponse(conn)
+	if err != nil {
+		log.Printf("[replication] auth read error from %s: %v", conn.RemoteAddr(), err)
+		conn.Close()
+		return
+	}
+	if !verifyAuth(s.authSecret, nonce[:], instruments, tag) {
+		log.Printf("[replication] auth FAILED from %s (instruments=%v)", conn.RemoteAddr(), instruments)
+		_ = WriteResponse(conn, false)
+		conn.Close()
+		return
+	}
+
+	// Clear the deadline now that the peer has authenticated.
+	_ = conn.SetDeadline(time.Time{})
+	log.Printf("[replication] replica %s authenticated for instruments: %v", conn.RemoteAddr(), instruments)
 
 	if err := WriteResponse(conn, true); err != nil {
 		conn.Close()

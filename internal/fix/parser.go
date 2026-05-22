@@ -59,6 +59,33 @@ func Parse(data []byte) (*Message, error) {
 		Raw:    data,
 	}
 
+	// Locate the checksum trailer "\x0110=NNN\x01" (exactly 3 ASCII digits).
+	// The checksum field must be the last field of the message.
+	if len(data) < 8 || data[len(data)-1] != SOH {
+		return nil, fmt.Errorf("malformed FIX message: missing terminating SOH")
+	}
+	csStart := len(data) - 7 // index of '1' in "10=NNN\x01"
+	if csStart < 0 || data[csStart-1] != SOH ||
+		data[csStart] != '1' || data[csStart+1] != '0' || data[csStart+2] != '=' ||
+		!isASCIIDigit(data[csStart+3]) || !isASCIIDigit(data[csStart+4]) || !isASCIIDigit(data[csStart+5]) {
+		return nil, fmt.Errorf("malformed FIX message: invalid checksum field")
+	}
+
+	// Verify checksum: sum of all bytes before the "10=" field (including the SOH
+	// that delimits it), mod 256. The trailer itself is not in the sum.
+	sum := 0
+	for _, b := range data[:csStart] {
+		sum += int(b)
+	}
+	expected := sum % 256
+	declared, err := strconv.Atoi(string(data[csStart+3 : csStart+6]))
+	if err != nil {
+		return nil, fmt.Errorf("malformed FIX message: non-numeric checksum")
+	}
+	if declared != expected {
+		return nil, fmt.Errorf("FIX checksum mismatch: declared=%d computed=%d", declared, expected)
+	}
+
 	s := string(data)
 	pairs := strings.Split(s, string(SOH))
 
@@ -90,6 +117,10 @@ func Parse(data []byte) (*Message, error) {
 	}
 
 	return msg, nil
+}
+
+func isASCIIDigit(b byte) bool {
+	return b >= '0' && b <= '9'
 }
 
 // Encode serializes a FIX message to wire format.

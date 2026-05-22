@@ -8,11 +8,22 @@ import (
 	"github.com/trading/matching-engine/internal/models"
 )
 
-func TestParseMessage(t *testing.T) {
-	raw := fmt.Sprintf("8=FIX.4.4%c9=100%c35=D%c49=CLIENT%c56=SERVER%c11=ord-001%c55=BTC-USD%c54=1%c40=2%c44=50000%c38=1.5%c10=000%c",
-		SOH, SOH, SOH, SOH, SOH, SOH, SOH, SOH, SOH, SOH, SOH, SOH)
+// withChecksum appends a correct "10=NNN\x01" trailer to body bytes.
+// body must already end with SOH.
+func withChecksum(body string) []byte {
+	sum := 0
+	for _, b := range []byte(body) {
+		sum += int(b)
+	}
+	return []byte(body + fmt.Sprintf("10=%03d%c", sum%256, SOH))
+}
 
-	msg, err := Parse([]byte(raw))
+func TestParseMessage(t *testing.T) {
+	body := fmt.Sprintf("8=FIX.4.4%c9=100%c35=D%c49=CLIENT%c56=SERVER%c11=ord-001%c55=BTC-USD%c54=1%c40=2%c44=50000%c38=1.5%c",
+		SOH, SOH, SOH, SOH, SOH, SOH, SOH, SOH, SOH, SOH, SOH)
+	raw := withChecksum(body)
+
+	msg, err := Parse(raw)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -39,18 +50,41 @@ func TestParseMessage(t *testing.T) {
 }
 
 func TestParseInvalidBeginString(t *testing.T) {
-	raw := fmt.Sprintf("8=FIX.4.2%c35=D%c10=000%c", SOH, SOH, SOH)
-	_, err := Parse([]byte(raw))
+	raw := withChecksum(fmt.Sprintf("8=FIX.4.2%c35=D%c", SOH, SOH))
+	_, err := Parse(raw)
 	if err == nil {
 		t.Error("expected error for invalid BeginString")
 	}
 }
 
 func TestParseMissingMsgType(t *testing.T) {
-	raw := fmt.Sprintf("8=FIX.4.4%c9=10%c10=000%c", SOH, SOH, SOH)
-	_, err := Parse([]byte(raw))
+	raw := withChecksum(fmt.Sprintf("8=FIX.4.4%c9=10%c", SOH, SOH))
+	_, err := Parse(raw)
 	if err == nil {
 		t.Error("expected error for missing MsgType")
+	}
+}
+
+func TestParseRejectsChecksumMismatch(t *testing.T) {
+	body := fmt.Sprintf("8=FIX.4.4%c9=10%c35=0%c", SOH, SOH, SOH)
+	// Append a deliberately wrong checksum.
+	bad := []byte(body + fmt.Sprintf("10=001%c", SOH))
+	if _, err := Parse(bad); err == nil {
+		t.Fatal("expected error for checksum mismatch")
+	}
+}
+
+func TestParseRejectsMalformedChecksumField(t *testing.T) {
+	cases := map[string]string{
+		"non-digit checksum":   fmt.Sprintf("8=FIX.4.4%c35=0%c10=ABC%c", SOH, SOH, SOH),
+		"too-short checksum":   fmt.Sprintf("8=FIX.4.4%c35=0%c10=1%c", SOH, SOH, SOH),
+		"missing terminator":   fmt.Sprintf("8=FIX.4.4%c35=0%c10=000", SOH, SOH),
+		"no checksum at all":   fmt.Sprintf("8=FIX.4.4%c35=0%c", SOH, SOH),
+	}
+	for name, raw := range cases {
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
 	}
 }
 

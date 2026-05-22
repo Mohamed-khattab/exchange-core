@@ -97,8 +97,9 @@ func TestInvalidMagic(t *testing.T) {
 
 func TestServerClientIntegration(t *testing.T) {
 	eventCh := make(chan ReplicationEvent, 100)
+	secret := []byte("test-replication-secret-32-bytes")
 
-	srv, err := NewServer("127.0.0.1:0", eventCh)
+	srv, err := NewServer("127.0.0.1:0", eventCh, secret)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestServerClientIntegration(t *testing.T) {
 	var received []ReplicationEvent
 	done := make(chan struct{})
 
-	client := NewClient(addr, []string{"BTC-USD"}, func(inst string, record []byte) {
+	client, err := NewClient(addr, []string{"BTC-USD"}, secret, func(inst string, record []byte) {
 		received = append(received, ReplicationEvent{Instrument: inst, Record: record})
 		if len(received) >= 3 {
 			select {
@@ -120,6 +121,9 @@ func TestServerClientIntegration(t *testing.T) {
 			}
 		}
 	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -150,7 +154,8 @@ func TestServerClientIntegration(t *testing.T) {
 
 func TestServerReplicaCount(t *testing.T) {
 	eventCh := make(chan ReplicationEvent, 100)
-	srv, err := NewServer("127.0.0.1:0", eventCh)
+	secret := []byte("test-replication-secret-32-bytes")
+	srv, err := NewServer("127.0.0.1:0", eventCh, secret)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -162,12 +167,70 @@ func TestServerReplicaCount(t *testing.T) {
 	}
 
 	addr := srv.listener.Addr().String()
-	client := NewClient(addr, []string{"BTC-USD"}, nil)
+	client, err := NewClient(addr, []string{"BTC-USD"}, secret, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 	client.Connect()
 	defer client.Stop()
 
 	time.Sleep(100 * time.Millisecond)
 	if srv.ReplicaCount() != 1 {
 		t.Errorf("replica count = %d, want 1", srv.ReplicaCount())
+	}
+}
+
+func TestServerRejectsBadSecret(t *testing.T) {
+	eventCh := make(chan ReplicationEvent, 100)
+	srvSecret := []byte("server-secret-XXXXXXXXXXXXXXXXXX")
+	srv, err := NewServer("127.0.0.1:0", eventCh, srvSecret)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.Run()
+	defer srv.Stop()
+
+	addr := srv.listener.Addr().String()
+
+	// Wrong secret -> Connect() must fail.
+	wrongSecret := []byte("client-secret-YYYYYYYYYYYYYYYYYY")
+	client, err := NewClient(addr, []string{"BTC-USD"}, wrongSecret, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer client.Stop()
+
+	if err := client.Connect(); err == nil {
+		t.Fatal("Connect() with wrong secret unexpectedly succeeded")
+	}
+
+	// Server should still have zero replicas after the rejection.
+	time.Sleep(50 * time.Millisecond)
+	if c := srv.ReplicaCount(); c != 0 {
+		t.Errorf("replica count after rejection = %d, want 0", c)
+	}
+}
+
+func TestNewServerRequiresSecret(t *testing.T) {
+	eventCh := make(chan ReplicationEvent, 1)
+	if _, err := NewServer("127.0.0.1:0", eventCh, nil); err == nil {
+		t.Error("expected error for nil secret")
+	}
+	if _, err := NewServer("127.0.0.1:0", eventCh, []byte("short")); err == nil {
+		t.Error("expected error for short secret")
+	}
+}
+
+func TestComputeAuthTagDeterministic(t *testing.T) {
+	secret := []byte("a-very-secret-key-XXXXXXXXXXXXXX")
+	nonce := []byte("0123456789ABCDEF")
+	t1 := computeAuthTag(secret, nonce, []string{"BTC-USD", "ETH-USD"})
+	t2 := computeAuthTag(secret, nonce, []string{"BTC-USD", "ETH-USD"})
+	if !bytes.Equal(t1, t2) {
+		t.Error("tag must be deterministic for same inputs")
+	}
+	t3 := computeAuthTag(secret, nonce, []string{"BTC-USD"})
+	if bytes.Equal(t1, t3) {
+		t.Error("tag must change when instrument list changes")
 	}
 }

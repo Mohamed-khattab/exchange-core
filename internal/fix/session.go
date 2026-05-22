@@ -158,21 +158,28 @@ func (s *Session) sendLogout(reason string) {
 }
 
 func (s *Session) readMessage() (*Message, error) {
-	// Read until we find a complete FIX message (ends with 10=NNN\x01)
+	// Read until we find a complete FIX message (ends with \x0110=NNN\x01).
+	// We require exactly 3 ASCII digits between "10=" and the terminating SOH;
+	// loose framing here lets a peer truncate the checksum and bypass validation.
 	var data []byte
+	const maxMessageSize = 1 << 20 // 1MB hard cap to bound memory per session
 	for {
 		b, err := s.reader.ReadByte()
 		if err != nil {
 			return nil, err
 		}
 		data = append(data, b)
-
-		// Check for end: "10=XXX\x01"
-		if b == SOH && len(data) > 7 {
-			tail := string(data[len(data)-8:])
-			if len(tail) >= 7 && tail[0] == '1' && tail[1] == '0' && tail[2] == '=' {
-				break
-			}
+		if len(data) > maxMessageSize {
+			return nil, fmt.Errorf("FIX message exceeds %d bytes", maxMessageSize)
+		}
+		if b != SOH || len(data) < 8 {
+			continue
+		}
+		// data[-8..] should be "\x0110=NNN\x01"
+		tail := data[len(data)-8:]
+		if tail[0] == SOH && tail[1] == '1' && tail[2] == '0' && tail[3] == '=' &&
+			isASCIIDigit(tail[4]) && isASCIIDigit(tail[5]) && isASCIIDigit(tail[6]) {
+			break
 		}
 	}
 

@@ -3,10 +3,19 @@
 package replication
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io"
 )
+
+// nonceLen is the size of the per-connection challenge nonce.
+const nonceLen = 16
+
+// hmacLen is the size of an HMAC-SHA256 tag.
+const hmacLen = sha256.Size
 
 // Protocol constants
 var Magic = [4]byte{'R', 'E', 'P', 'L'}
@@ -183,4 +192,70 @@ func ReadMessage(r io.Reader) (msgType uint8, instrument string, data []byte, er
 func WriteHeartbeat(w io.Writer) error {
 	_, err := w.Write([]byte{MsgHeartbeat})
 	return err
+}
+
+// newNonce returns a cryptographically random nonce for challenge-response auth.
+func newNonce() ([nonceLen]byte, error) {
+	var n [nonceLen]byte
+	if _, err := io.ReadFull(rand.Reader, n[:]); err != nil {
+		return n, fmt.Errorf("generating nonce: %w", err)
+	}
+	return n, nil
+}
+
+// computeAuthTag returns HMAC-SHA256(secret, nonce || instruments-on-the-wire).
+// Binding the instruments list defends against an attacker swapping subscriptions
+// after the handshake has been signed.
+func computeAuthTag(secret, nonce []byte, instruments []string) []byte {
+	m := hmac.New(sha256.New, secret)
+	m.Write(nonce)
+	for _, inst := range instruments {
+		var lb [2]byte
+		binary.BigEndian.PutUint16(lb[:], uint16(len(inst)))
+		m.Write(lb[:])
+		m.Write([]byte(inst))
+	}
+	return m.Sum(nil)
+}
+
+// WriteChallenge sends a server -> client challenge nonce.
+func WriteChallenge(w io.Writer, nonce []byte) error {
+	if len(nonce) != nonceLen {
+		return fmt.Errorf("challenge nonce must be %d bytes", nonceLen)
+	}
+	_, err := w.Write(nonce)
+	return err
+}
+
+// ReadChallenge reads a server -> client challenge nonce.
+func ReadChallenge(r io.Reader) ([nonceLen]byte, error) {
+	var n [nonceLen]byte
+	if _, err := io.ReadFull(r, n[:]); err != nil {
+		return n, fmt.Errorf("reading challenge: %w", err)
+	}
+	return n, nil
+}
+
+// WriteAuthResponse sends the HMAC-SHA256 tag computed by the client.
+func WriteAuthResponse(w io.Writer, tag []byte) error {
+	if len(tag) != hmacLen {
+		return fmt.Errorf("auth tag must be %d bytes", hmacLen)
+	}
+	_, err := w.Write(tag)
+	return err
+}
+
+// ReadAuthResponse reads the HMAC-SHA256 tag sent by the client.
+func ReadAuthResponse(r io.Reader) ([]byte, error) {
+	tag := make([]byte, hmacLen)
+	if _, err := io.ReadFull(r, tag); err != nil {
+		return nil, fmt.Errorf("reading auth response: %w", err)
+	}
+	return tag, nil
+}
+
+// verifyAuth performs a constant-time comparison of computed vs received tag.
+func verifyAuth(secret, nonce []byte, instruments []string, received []byte) bool {
+	expected := computeAuthTag(secret, nonce, instruments)
+	return hmac.Equal(expected, received)
 }
