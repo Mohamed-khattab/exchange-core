@@ -5,18 +5,22 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"nhooyr.io/websocket"
 )
 
 // Hub manages all WebSocket clients and event dispatch.
 type Hub struct {
-	mu         sync.RWMutex
-	clients    map[*Client]struct{}
-	register   chan *Client
-	unregister chan *Client
-	broadcast  chan *Event
-	maxClients int
+	mu          sync.RWMutex
+	clients     map[*Client]struct{}
+	register    chan *Client
+	unregister  chan *Client
+	broadcast   chan *Event
+	maxClients  int
+	droppedCnt  uint64 // total events dropped due to full broadcast channel
+	lastDropLog atomic.Int64
 }
 
 // NewHub creates a new WebSocket hub.
@@ -75,12 +79,28 @@ func (h *Hub) Run(ctx context.Context) {
 }
 
 // Publish sends an event to all subscribed clients (non-blocking).
+// When the broadcast channel is saturated the event is dropped; the running
+// total is exposed via DroppedCount() and a rate-limited WARN log surfaces the
+// condition so a saturated feed is never silent.
 func (h *Hub) Publish(event *Event) {
 	select {
 	case h.broadcast <- event:
 	default:
-		// broadcast buffer full, drop event
+		total := atomic.AddUint64(&h.droppedCnt, 1)
+		// Rate-limit the log to once per second to avoid flooding under saturation.
+		now := time.Now().UnixNano()
+		last := h.lastDropLog.Load()
+		if now-last > int64(time.Second) && h.lastDropLog.CompareAndSwap(last, now) {
+			log.Printf("[ws] broadcast channel full; dropped event type=%s instrument=%s (total dropped=%d)",
+				event.Type, event.Instrument, total)
+		}
 	}
+}
+
+// DroppedCount returns the total number of events dropped because the
+// broadcast channel was full. Used by Prometheus exporters and tests.
+func (h *Hub) DroppedCount() uint64 {
+	return atomic.LoadUint64(&h.droppedCnt)
 }
 
 // HandleUpgrade upgrades an HTTP request to a WebSocket connection.

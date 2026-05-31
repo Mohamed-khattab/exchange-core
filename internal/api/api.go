@@ -4,6 +4,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -137,9 +138,26 @@ func (h *handler) massCancelHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// decodeJSON is a hardened JSON decoder used by all write handlers. It caps
+// body size to defend against oversized payloads and rejects unknown fields so
+// client typos surface as 400s instead of silent zero-valued orders.
+func decodeJSON(r *http.Request, dst interface{}) error {
+	const maxBody = 1 << 20 // 1MB
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBody)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("request body must contain a single JSON object")
+	}
+	return nil
+}
+
 func (h *handler) submitOrderHandler(w http.ResponseWriter, r *http.Request) {
 	var req models.OrderRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		badRequest(w, "invalid JSON: "+err.Error())
 		return
 	}
@@ -188,7 +206,7 @@ func (h *handler) orderByIDHandler(w http.ResponseWriter, r *http.Request) {
 		okResp(w, orderToResponse(order))
 	case http.MethodPut:
 		var req models.AmendRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSON(r, &req); err != nil {
 			badRequest(w, "invalid JSON: "+err.Error())
 			return
 		}

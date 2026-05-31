@@ -495,3 +495,25 @@ func TestSubmitIOCOrderViaAPI(t *testing.T) {
 		t.Errorf("status = %d", rec.Code)
 	}
 }
+
+func TestSubmitRejectsUnknownFields(t *testing.T) {
+	router := newTestRouter()
+	body := `{"client_id":"u1","instrument":"BTC-USD","side":"BUY","type":"LIMIT","price":50000,"quantity":1.0,"bogus_field":"nope"}`
+	req := httptest.NewRequest("POST", "/v1/orders", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Errorf("expected 400 for unknown field, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSubmitRejectsTrailingGarbage(t *testing.T) {
+	router := newTestRouter()
+	body := `{"client_id":"t","instrument":"BTC-USD","side":"BUY","type":"LIMIT","price":50000,"quantity":1.0}{"extra":"object"}`
+	req := httptest.NewRequest("POST", "/v1/orders", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Errorf("expected 400 for multiple JSON objects, got %d", rec.Code)
+	}
+}

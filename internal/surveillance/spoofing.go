@@ -13,6 +13,11 @@ type orderRecord struct {
 	PlacedAt  time.Time
 }
 
+// maxRecentOrdersPerClient bounds the per-client order history to prevent a
+// flood of un-cancelled placements from growing the detector's memory without
+// limit. The oldest records are evicted first when the cap is hit.
+const maxRecentOrdersPerClient = 10_000
+
 // SpoofingDetector detects potential spoofing: large orders placed then quickly cancelled.
 type SpoofingDetector struct {
 	enabled        bool
@@ -44,7 +49,13 @@ func (d *SpoofingDetector) OnEvent(event *Event) []Alert {
 		if event.Order == nil {
 			return nil
 		}
-		d.recentOrders[event.ClientID] = append(d.recentOrders[event.ClientID], orderRecord{
+		recs := d.recentOrders[event.ClientID]
+		// Evict oldest when at the cap. Without this, an adversarial client that
+		// places orders without ever cancelling can grow this slice without bound.
+		if len(recs) >= maxRecentOrdersPerClient {
+			recs = recs[len(recs)-maxRecentOrdersPerClient+1:]
+		}
+		d.recentOrders[event.ClientID] = append(recs, orderRecord{
 			OrderID:  event.Order.ID,
 			Quantity: event.Order.Quantity,
 			Price:    event.Order.Price,
